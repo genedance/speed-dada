@@ -1,16 +1,23 @@
-//! PyO3 bindings for dada2-core.
+//! `PyO3` bindings for dada2-core.
 //!
 //! Exposes the full pipeline as a Python module `dada2`.
 
+// Python docstrings use snake_case parameter names that trigger doc_markdown.
+// The remaining lints are suppressed where intentionally used.
+#![allow(clippy::doc_markdown)]
+
 use dada2_core::{
     chimera::remove_bimeras,
-    dada::{run_dada, Asv, DadaConfig},
+    dada::{run_dada, run_dada_pooled, Asv, DadaConfig},
     derep::dereplicate,
     error_model::{learn_errors, ErrorLearningConfig, ErrorModel},
-    filter::{filter_and_trim, FilterConfig},
+    filter::{filter_and_trim, filter_and_trim_paired, FilterConfig},
     io::{fasta::read_fasta, fastq::read_fastq},
     merge::{merge_pairs, MergeConfig},
-    taxonomy::{assign_taxonomy, TaxonomyConfig},
+    primer::{trim_primers, PrimerConfig},
+    quality_profile::quality_profile,
+    sequence_table::SequenceTable,
+    taxonomy::{assign_taxonomy, load_lineage_tsv, TaxonomyConfig},
 };
 use pyo3::prelude::*;
 use std::{collections::HashMap, path::Path, path::PathBuf};
@@ -82,6 +89,31 @@ pub struct PyFilterStats {
     pub reads_out: u64,
 }
 
+// ── FilterStatsPaired ───────────────────────────────────────────────────────
+
+/// Statistics for paired-end filtering.
+///
+/// Attributes
+/// ----------
+/// reads_in : int
+/// pairs_out : int
+/// fwd_failed : int
+/// rev_failed : int
+/// both_failed : int
+#[pyclass(name = "FilterStatsPaired")]
+pub struct PyFilterStatsPaired {
+    #[pyo3(get)]
+    pub reads_in: u64,
+    #[pyo3(get)]
+    pub pairs_out: u64,
+    #[pyo3(get)]
+    pub fwd_failed: u64,
+    #[pyo3(get)]
+    pub rev_failed: u64,
+    #[pyo3(get)]
+    pub both_failed: u64,
+}
+
 // ── ErrorModel ──────────────────────────────────────────────────────────────
 
 /// Learned parametric error model.
@@ -101,6 +133,7 @@ impl PyErrorModel {
         let mut quality = Vec::new();
         let mut error_rates = Vec::new();
         for q in 0..dada2_core::error_model::MAX_QUAL {
+            #[allow(clippy::cast_precision_loss)]
             quality.push(q as f64);
             // Mean mismatch rate across all 12 substitution classes
             let rate: f64 = (0..16)
@@ -177,7 +210,196 @@ impl PyTaxonAssignment {
     }
 }
 
+// ── SequenceTable ───────────────────────────────────────────────────────────
+
+/// Sample × ASV abundance matrix.
+///
+/// Attributes
+/// ----------
+/// samples : list[str]
+/// sequences : list[str]
+///     Hex-encoded ASV sequences.
+/// counts : list[list[int]]
+///     ``counts[sample_idx][asv_idx]`` = abundance.
+#[pyclass(name = "SequenceTable")]
+pub struct PySequenceTable(SequenceTable);
+
+#[pymethods]
+impl PySequenceTable {
+    /// Sample names.
+    #[getter]
+    fn samples(&self) -> Vec<String> {
+        self.0.samples.clone()
+    }
+
+    /// Hex-encoded ASV sequences.
+    #[getter]
+    fn sequences(&self) -> Vec<String> {
+        self.0.sequences.clone()
+    }
+
+    /// Abundance matrix.
+    #[getter]
+    fn counts(&self) -> Vec<Vec<u32>> {
+        self.0.counts.clone()
+    }
+
+    /// Write as TSV to *path*.
+    fn to_tsv(&self, path: &str) -> PyResult<()> {
+        self.0
+            .to_tsv(std::path::Path::new(path))
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
+    /// Serialise to JSON string.
+    fn to_json(&self) -> PyResult<String> {
+        self.0
+            .to_json()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SequenceTable(samples={}, sequences={})",
+            self.0.samples.len(),
+            self.0.sequences.len()
+        )
+    }
+}
+
+// ── QualityProfile ──────────────────────────────────────────────────────────
+
+/// Per-cycle quality summary statistics for a FASTQ file.
+///
+/// Attributes
+/// ----------
+/// n_reads : int
+/// cycle_mean : list[float]
+/// cycle_p25 : list[float]
+/// cycle_p50 : list[float]
+/// cycle_p75 : list[float]
+/// cycle_count : list[int]
+#[pyclass(name = "QualityProfile")]
+pub struct PyQualityProfile {
+    #[pyo3(get)]
+    pub n_reads: u64,
+    #[pyo3(get)]
+    pub cycle_mean: Vec<f64>,
+    #[pyo3(get)]
+    pub cycle_p25: Vec<f64>,
+    #[pyo3(get)]
+    pub cycle_p50: Vec<f64>,
+    #[pyo3(get)]
+    pub cycle_p75: Vec<f64>,
+    #[pyo3(get)]
+    pub cycle_count: Vec<u64>,
+}
+
+#[pymethods]
+impl PyQualityProfile {
+    fn __repr__(&self) -> String {
+        format!(
+            "QualityProfile(n_reads={}, n_cycles={})",
+            self.n_reads,
+            self.cycle_mean.len()
+        )
+    }
+}
+
 // ── Public pipeline functions ────────────────────────────────────────────────
+
+/// Build a sequence table from per-sample DADA results.
+///
+/// Parameters
+/// ----------
+/// sample_names : list[str]
+/// results : list[DadaResult]
+///
+/// Returns
+/// -------
+/// SequenceTable
+#[pyfunction]
+#[pyo3(name = "make_sequence_table")]
+#[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
+fn make_sequence_table_py(
+    sample_names: Vec<String>,
+    results: Vec<PyRef<'_, PyDadaResult>>,
+) -> PySequenceTable {
+    let name_refs: Vec<&str> = sample_names.iter().map(String::as_str).collect();
+    let asvs: Vec<Vec<Asv>> = results.iter().map(|r| r.0.clone()).collect();
+    let table = SequenceTable::new(&name_refs, &asvs);
+    PySequenceTable(table)
+}
+
+/// Trim primers from FASTQ reads.
+///
+/// Parameters
+/// ----------
+/// fwd_primer : str | bytes
+/// rev_primer : str | bytes
+/// input_path : str
+/// output_path : str
+/// max_mismatches : int, optional
+/// min_overlap : int, optional
+///
+/// Returns
+/// -------
+/// FilterStats
+#[pyfunction]
+#[pyo3(name = "trim_primers")]
+#[pyo3(signature = (fwd_primer, rev_primer, input_path, output_path, max_mismatches = 0, min_overlap = 10))]
+fn trim_primers_py(
+    py: Python<'_>,
+    fwd_primer: Vec<u8>,
+    rev_primer: Vec<u8>,
+    input_path: &str,
+    output_path: &str,
+    max_mismatches: u32,
+    min_overlap: usize,
+) -> PyResult<PyFilterStats> {
+    let inp = input_path.to_owned();
+    let out = output_path.to_owned();
+    let stats = py
+        .allow_threads(move || {
+            let cfg = PrimerConfig { fwd_primer, rev_primer, max_mismatches, min_overlap };
+            trim_primers(&cfg, std::path::Path::new(&inp), std::path::Path::new(&out))
+        })
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    Ok(PyFilterStats { reads_in: stats.reads_in, reads_out: stats.reads_out })
+}
+
+/// Compute per-cycle quality statistics from a FASTQ file.
+///
+/// Parameters
+/// ----------
+/// fastq_path : str
+/// n_reads : int, optional
+///     Maximum number of reads to sample (0 = all reads).
+///
+/// Returns
+/// -------
+/// QualityProfile
+#[pyfunction]
+#[pyo3(name = "quality_profile")]
+#[pyo3(signature = (fastq_path, n_reads = 500_000))]
+fn quality_profile_py(
+    py: Python<'_>,
+    fastq_path: &str,
+    n_reads: usize,
+) -> PyResult<PyQualityProfile> {
+    let path = fastq_path.to_owned();
+    let profile = py
+        .allow_threads(move || quality_profile(std::path::Path::new(&path), n_reads))
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    Ok(PyQualityProfile {
+        n_reads: profile.n_reads,
+        cycle_mean: profile.cycle_mean,
+        cycle_p25: profile.cycle_p25,
+        cycle_p50: profile.cycle_p50,
+        cycle_p75: profile.cycle_p75,
+        cycle_count: profile.cycle_count,
+    })
+}
 
 /// Filter and trim FASTQ reads.
 ///
@@ -205,6 +427,58 @@ fn filter_and_trim_py(
         .allow_threads(move || filter_and_trim(&cfg, Path::new(&inp), Path::new(&out)))
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
     Ok(PyFilterStats { reads_in: stats.reads_in, reads_out: stats.reads_out })
+}
+
+/// Filter and trim paired-end FASTQ files in lock-step.
+///
+/// Parameters
+/// ----------
+/// config_fwd : FilterConfig
+/// config_rev : FilterConfig
+/// r1_in : str
+/// r2_in : str
+/// r1_out : str
+/// r2_out : str
+///
+/// Returns
+/// -------
+/// FilterStatsPaired
+#[pyfunction]
+#[pyo3(name = "filter_and_trim_paired")]
+fn filter_and_trim_paired_py(
+    py: Python<'_>,
+    config_fwd: &PyFilterConfig,
+    config_rev: &PyFilterConfig,
+    r1_in: &str,
+    r2_in: &str,
+    r1_out: &str,
+    r2_out: &str,
+) -> PyResult<PyFilterStatsPaired> {
+    let cfg_fwd = config_fwd.0.clone();
+    let cfg_rev = config_rev.0.clone();
+    let r1_in = r1_in.to_owned();
+    let r2_in = r2_in.to_owned();
+    let r1_out = r1_out.to_owned();
+    let r2_out = r2_out.to_owned();
+    let stats = py
+        .allow_threads(move || {
+            filter_and_trim_paired(
+                &cfg_fwd,
+                &cfg_rev,
+                std::path::Path::new(&r1_in),
+                std::path::Path::new(&r2_in),
+                std::path::Path::new(&r1_out),
+                std::path::Path::new(&r2_out),
+            )
+        })
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    Ok(PyFilterStatsPaired {
+        reads_in: stats.reads_in,
+        pairs_out: stats.pairs_out,
+        fwd_failed: stats.fwd_failed,
+        rev_failed: stats.rev_failed,
+        both_failed: stats.both_failed,
+    })
 }
 
 /// Learn error rates from FASTQ files.
@@ -299,6 +573,51 @@ fn run_dada_py(
     Ok(PyDadaResult(asvs))
 }
 
+/// Run DADA on multiple samples with cross-sample pooling.
+///
+/// Parameters
+/// ----------
+/// samples : list[list[tuple[bytes, int]]]
+///     One dereplicated sample per element (output of ``dereplicate``).
+/// error_model : ErrorModel
+/// omega_a : float, optional
+///
+/// Returns
+/// -------
+/// list[DadaResult]
+///     One result per input sample.
+#[pyfunction]
+#[pyo3(name = "run_dada_pooled")]
+#[pyo3(signature = (samples, error_model, omega_a = 1e-40))]
+fn run_dada_pooled_py(
+    py: Python<'_>,
+    samples: Vec<Vec<(Vec<u8>, u32)>>,
+    error_model: &PyErrorModel,
+    omega_a: f64,
+) -> PyResult<Vec<PyDadaResult>> {
+    let inner_em = error_model.0.clone();
+    let results = py
+        .allow_threads(move || {
+            let converted: Vec<Vec<dada2_core::derep::UniqueSeq>> = samples
+                .into_iter()
+                .map(|s| {
+                    s.into_iter()
+                        .map(|(seq, count)| {
+                            let qual_sum = vec![30.0 * f64::from(count); seq.len()];
+                            dada2_core::derep::UniqueSeq { seq, count, qual_sum }
+                        })
+                        .collect()
+                })
+                .collect();
+            let refs: Vec<&[dada2_core::derep::UniqueSeq]> =
+                converted.iter().map(Vec::as_slice).collect();
+            let cfg = DadaConfig { omega_a, ..Default::default() };
+            run_dada_pooled(&refs, &inner_em, &cfg)
+        })
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    Ok(results.into_iter().map(PyDadaResult).collect())
+}
+
 /// Merge forward and reverse DADA results.
 ///
 /// Parameters
@@ -356,36 +675,45 @@ fn remove_bimeras_py(py: Python<'_>, seqs: Vec<(Vec<u8>, u32)>) -> PyResult<Vec<
 /// ref_fasta : str
 ///     Path to reference FASTA (headers must include lineage separated by `;`).
 /// k : int, optional
+/// lineage_tsv : str | None, optional
+///     Path to a TSV file with ``seq_id\\tlineage`` format. When provided,
+///     lineages are loaded from this file instead of the FASTA headers.
 ///
 /// Returns
 /// -------
 /// list[TaxonAssignment]
 #[pyfunction]
 #[pyo3(name = "assign_taxonomy")]
-#[pyo3(signature = (seqs, ref_fasta, k = 8))]
+#[pyo3(signature = (seqs, ref_fasta, k = 8, lineage_tsv = None))]
 fn assign_taxonomy_py(
     py: Python<'_>,
     seqs: Vec<Vec<u8>>,
     ref_fasta: &str,
     k: usize,
+    lineage_tsv: Option<&str>,
 ) -> PyResult<Vec<PyTaxonAssignment>> {
     let ref_path = ref_fasta.to_owned();
+    let tsv_path = lineage_tsv.map(str::to_owned);
     let assignments = py
         .allow_threads(move || {
             let ref_records = read_fasta(Path::new(&ref_path))?;
-            let lineages: HashMap<String, Vec<String>> = ref_records
-                .iter()
-                .map(|r| {
-                    let lin: Vec<String> = r
-                        .description
-                        .as_deref()
-                        .unwrap_or("")
-                        .split(';')
-                        .map(|s| s.trim().to_owned())
-                        .collect();
-                    (r.id.clone(), lin)
-                })
-                .collect();
+            let lineages: HashMap<String, Vec<String>> = if let Some(tsv) = tsv_path {
+                load_lineage_tsv(Path::new(&tsv))?
+            } else {
+                ref_records
+                    .iter()
+                    .map(|r| {
+                        let lin: Vec<String> = r
+                            .description
+                            .as_deref()
+                            .unwrap_or("")
+                            .split(';')
+                            .map(|s| s.trim().to_owned())
+                            .collect();
+                        (r.id.clone(), lin)
+                    })
+                    .collect()
+            };
             let cfg = TaxonomyConfig { k, ..Default::default() };
             assign_taxonomy(&seqs, &ref_records, &lineages, &cfg)
         })
@@ -482,7 +810,11 @@ fn run_pipeline_py(
             // Return as hex-encoded sequence → abundance map
             let mut out_map = HashMap::new();
             for (seq, abund) in clean {
-                let hex = seq.iter().map(|b| format!("{b:02x}")).collect::<String>();
+                use std::fmt::Write as _;
+                let hex = seq.iter().fold(String::with_capacity(seq.len() * 2), |mut acc, b| {
+                    let _ = write!(acc, "{b:02x}");
+                    acc
+                });
                 *out_map.entry(hex).or_insert(0) += abund;
             }
             Ok(out_map)
@@ -491,14 +823,38 @@ fn run_pipeline_py(
     Ok(result)
 }
 
+/// Initialise Rust-level logging. Call once at startup.
+///
+/// Parameters
+/// ----------
+/// level : str, optional
+///     Log level: ``"error"``, ``"warn"``, ``"info"`` (default), ``"debug"``, ``"trace"``.
+#[pyfunction]
+#[pyo3(name = "init_logging")]
+#[pyo3(signature = (level = "info"))]
+fn init_logging_py(level: &str) {
+    // SAFETY: single-threaded at import time; env var is read by env_logger::try_init.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::set_var("RUST_LOG", level);
+    }
+    env_logger::try_init().ok(); // ok() ignores already-initialised error
+}
+
 /// dada2 — high-performance ASV pipeline (Rust core).
 #[pymodule]
 fn dada2(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
+    m.add_function(wrap_pyfunction!(init_logging_py, m)?)?;
+    m.add_function(wrap_pyfunction!(make_sequence_table_py, m)?)?;
+    m.add_function(wrap_pyfunction!(quality_profile_py, m)?)?;
+    m.add_function(wrap_pyfunction!(trim_primers_py, m)?)?;
     m.add_function(wrap_pyfunction!(filter_and_trim_py, m)?)?;
+    m.add_function(wrap_pyfunction!(filter_and_trim_paired_py, m)?)?;
     m.add_function(wrap_pyfunction!(learn_errors_py, m)?)?;
     m.add_function(wrap_pyfunction!(dereplicate_py, m)?)?;
     m.add_function(wrap_pyfunction!(run_dada_py, m)?)?;
+    m.add_function(wrap_pyfunction!(run_dada_pooled_py, m)?)?;
     m.add_function(wrap_pyfunction!(merge_pairs_py, m)?)?;
     m.add_function(wrap_pyfunction!(remove_bimeras_py, m)?)?;
     m.add_function(wrap_pyfunction!(assign_taxonomy_py, m)?)?;
@@ -506,6 +862,9 @@ fn dada2(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_class::<PyFilterConfig>()?;
     m.add_class::<PyFilterStats>()?;
+    m.add_class::<PyFilterStatsPaired>()?;
+    m.add_class::<PyQualityProfile>()?;
+    m.add_class::<PySequenceTable>()?;
     m.add_class::<PyErrorModel>()?;
     m.add_class::<PyDadaResult>()?;
     m.add_class::<PyTaxonAssignment>()?;

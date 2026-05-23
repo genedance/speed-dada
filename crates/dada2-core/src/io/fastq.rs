@@ -16,26 +16,32 @@ pub struct FastqRecord {
 
 impl FastqRecord {
     /// Return the mean Phred quality score across all bases.
+    #[must_use]
     pub fn mean_quality(&self) -> f64 {
         if self.qual.is_empty() {
             return 0.0;
         }
         let sum: f64 = self.qual.iter().map(|&q| f64::from(q.saturating_sub(33))).sum();
-        sum / self.qual.len() as f64
+        #[allow(clippy::cast_precision_loss)]
+        let len = self.qual.len() as f64;
+        sum / len
     }
 
     /// Truncate sequence and quality to `len` bases.
+    #[allow(dead_code)]
     pub fn truncate(&mut self, len: usize) {
         self.seq.truncate(len);
         self.qual.truncate(len);
     }
 
     /// Return `true` if any window of `width` bases has mean quality < `min_q`.
+    #[must_use]
     pub fn has_low_quality_window(&self, min_q: u8, width: usize) -> bool {
         if width == 0 || self.qual.len() < width {
             return false;
         }
         self.qual.windows(width).any(|w| {
+            #[allow(clippy::cast_precision_loss)]
             let mean: f64 = w.iter().map(|&q| f64::from(q.saturating_sub(33))).sum::<f64>()
                 / w.len() as f64;
             mean < f64::from(min_q)
@@ -63,7 +69,7 @@ pub fn read_fastq(path: &Path) -> Result<Vec<FastqRecord>, Dada2Error> {
             .unwrap_or("")
             .to_owned();
         let seq = rec.seq().to_vec();
-        let qual = rec.qual().map(|q| q.to_vec()).unwrap_or_default();
+        let qual = rec.qual().map(<[u8]>::to_vec).unwrap_or_default();
         records.push(FastqRecord { id, seq, qual });
     }
     Ok(records)
@@ -77,7 +83,7 @@ pub fn write_fastq(path: &Path, records: &[FastqRecord]) -> Result<(), Dada2Erro
     use std::io::Write;
     let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
     for r in records {
-        write!(f, "@{}\n", r.id)?;
+        writeln!(f, "@{}", r.id)?;
         f.write_all(&r.seq)?;
         write!(f, "\n+\n")?;
         f.write_all(&r.qual)?;

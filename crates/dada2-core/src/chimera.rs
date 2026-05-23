@@ -24,6 +24,7 @@ const MIN_ARM_LEN: usize = 8;
 pub fn remove_bimeras(
     seqs: &[(Vec<u8>, u32)],
 ) -> Result<Vec<(Vec<u8>, u32)>, Dada2Error> {
+    let n_in = seqs.len();
     // Sort descending by abundance (stable for determinism)
     let mut sorted = seqs.to_vec();
     sorted.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -31,7 +32,7 @@ pub fn remove_bimeras(
     let result: Vec<(Vec<u8>, u32)> = sorted
         .par_iter()
         .enumerate()
-        .filter(|(i, (_seq, abund))| {
+        .filter(|(i, (seq, abund))| {
             if *i == 0 {
                 return true; // most abundant is never a chimera
             }
@@ -40,7 +41,7 @@ pub fn remove_bimeras(
                 .filter(|(_, pa)| *pa > *abund)
                 .map(|(s, _)| s.as_slice())
                 .collect();
-            !is_bimera(_seq, &parents)
+            !is_bimera(seq, &parents)
         })
         .map(|(_, item)| item.clone())
         .collect();
@@ -48,6 +49,8 @@ pub fn remove_bimeras(
     // Restore descending-abundance order after parallel filter
     let mut out = result;
     out.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let n_out = out.len();
+    log::info!("remove_bimeras: {n_in} sequences → {n_out} after chimera removal");
     Ok(out)
 }
 
@@ -74,9 +77,8 @@ fn check_bimera_pair(candidate: &[u8], p1: &[u8], p2: &[u8]) -> bool {
     }
 
     // Find first position where candidate diverges from p1
-    let crossover = match first_mismatch(&candidate[..len], &p1[..len]) {
-        Some(pos) => pos,
-        None => return false, // candidate identical to p1 — not a bimera
+    let Some(crossover) = first_mismatch(&candidate[..len], &p1[..len]) else {
+        return false; // candidate identical to p1 — not a bimera
     };
 
     if crossover < MIN_ARM_LEN {

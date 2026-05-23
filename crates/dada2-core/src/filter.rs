@@ -79,10 +79,10 @@ pub fn filter_and_trim(
             .unwrap_or("")
             .to_owned();
         let seq_bytes = rec.seq().to_vec();
-        let qual_bytes = rec.qual().map(|q| q.to_vec()).unwrap_or_default();
+        let qual_bytes = rec.qual().map(<[u8]>::to_vec).unwrap_or_default();
 
         if let Some((seq, qual)) = apply_filters_owned(seq_bytes, qual_bytes, cfg) {
-            write!(writer, "@{id}\n")?;
+            writeln!(writer, "@{id}")?;
             writer.write_all(&seq)?;
             write!(writer, "\n+\n")?;
             writer.write_all(&qual)?;
@@ -90,6 +90,7 @@ pub fn filter_and_trim(
             reads_out += 1;
         }
     }
+    log::info!("filter_and_trim: {reads_in} reads in, {reads_out} passed");
     Ok(FilterStats { reads_in, reads_out })
 }
 
@@ -111,10 +112,145 @@ pub fn filter_and_trim_many(
         .collect()
 }
 
+/// Statistics for paired-end `filter_and_trim`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FilterStatsPaired {
+    /// Total pairs supplied as input.
+    pub reads_in: u64,
+    /// Pairs where both reads passed all filters.
+    pub pairs_out: u64,
+    /// Pairs discarded because the forward read failed.
+    pub fwd_failed: u64,
+    /// Pairs discarded because the reverse read failed.
+    pub rev_failed: u64,
+    /// Pairs discarded because both reads failed.
+    pub both_failed: u64,
+}
+
+/// Filter and trim paired-end FASTQ files in lock-step.
+///
+/// A pair is written to output only if both forward and reverse reads pass
+/// all filters. Discards both if either fails.
+///
+/// # Errors
+/// Returns [`Dada2Error`] on I/O or parse failure.
+pub fn filter_and_trim_paired(
+    cfg_fwd: &FilterConfig,
+    cfg_rev: &FilterConfig,
+    r1_in: &Path,
+    r2_in: &Path,
+    r1_out: &Path,
+    r2_out: &Path,
+) -> Result<FilterStatsPaired, Dada2Error> {
+    use needletail::parse_fastx_file;
+    use std::io::Write;
+
+    let mut reader1 = parse_fastx_file(r1_in)
+        .map_err(|e| Dada2Error::Parse(format!("cannot open {}: {e}", r1_in.display())))?;
+    let mut reader2 = parse_fastx_file(r2_in)
+        .map_err(|e| Dada2Error::Parse(format!("cannot open {}: {e}", r2_in.display())))?;
+
+    let mut writer1 = std::io::BufWriter::new(std::fs::File::create(r1_out)?);
+    let mut writer2 = std::io::BufWriter::new(std::fs::File::create(r2_out)?);
+
+    let mut reads_in = 0u64;
+    let mut pairs_out = 0u64;
+    let mut fwd_failed = 0u64;
+    let mut rev_failed = 0u64;
+    let mut both_failed = 0u64;
+
+    loop {
+        let rec1_opt = reader1.next();
+        let rec2_opt = reader2.next();
+
+        match (rec1_opt, rec2_opt) {
+            (None, None) => break,
+            (Some(r1), Some(r2)) => {
+                reads_in += 1;
+
+                let r1 = r1.map_err(|e| Dada2Error::Parse(e.to_string()))?;
+                let r2 = r2.map_err(|e| Dada2Error::Parse(e.to_string()))?;
+
+                let id1 = std::str::from_utf8(r1.id())
+                    .map_err(|e| Dada2Error::Parse(e.to_string()))?
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_owned();
+                let id2 = std::str::from_utf8(r2.id())
+                    .map_err(|e| Dada2Error::Parse(e.to_string()))?
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_owned();
+
+                let fwd_pass =
+                    apply_filters_owned(r1.seq().to_vec(), r1.qual().map(<[u8]>::to_vec).unwrap_or_default(), cfg_fwd);
+                let rev_pass =
+                    apply_filters_owned(r2.seq().to_vec(), r2.qual().map(<[u8]>::to_vec).unwrap_or_default(), cfg_rev);
+
+                match (fwd_pass, rev_pass) {
+                    (Some((seq1, qual1)), Some((seq2, qual2))) => {
+                        writeln!(writer1, "@{id1}")?;
+                        writer1.write_all(&seq1)?;
+                        write!(writer1, "\n+\n")?;
+                        writer1.write_all(&qual1)?;
+                        writeln!(writer1)?;
+
+                        writeln!(writer2, "@{id2}")?;
+                        writer2.write_all(&seq2)?;
+                        write!(writer2, "\n+\n")?;
+                        writer2.write_all(&qual2)?;
+                        writeln!(writer2)?;
+
+                        pairs_out += 1;
+                    }
+                    (None, None) => both_failed += 1,
+                    (None, Some(_)) => fwd_failed += 1,
+                    (Some(_), None) => rev_failed += 1,
+                }
+            }
+            _ => {
+                return Err(Dada2Error::Parse(
+                    "paired FASTQ files have different numbers of records".into(),
+                ));
+            }
+        }
+    }
+
+    log::info!(
+        "filter_and_trim_paired: {reads_in} pairs in, {pairs_out} passed, \
+         fwd_failed={fwd_failed} rev_failed={rev_failed} both_failed={both_failed}"
+    );
+
+    Ok(FilterStatsPaired { reads_in, pairs_out, fwd_failed, rev_failed, both_failed })
+}
+
+/// Filter and trim multiple paired-end FASTQ file pairs in parallel.
+///
+/// Each tuple is `(r1_in, r2_in, r1_out, r2_out)`.
+/// Processes all pairs in parallel using Rayon.
+///
+/// # Errors
+/// Returns the first error encountered.
+pub fn filter_and_trim_paired_many(
+    cfg_fwd: &FilterConfig,
+    cfg_rev: &FilterConfig,
+    pairs: &[(PathBuf, PathBuf, PathBuf, PathBuf)],
+) -> Result<Vec<FilterStatsPaired>, Dada2Error> {
+    use rayon::prelude::*;
+    pairs
+        .par_iter()
+        .map(|(r1_in, r2_in, r1_out, r2_out)| {
+            filter_and_trim_paired(cfg_fwd, cfg_rev, r1_in, r2_in, r1_out, r2_out)
+        })
+        .collect()
+}
+
 /// Apply all filter steps to owned seq/qual vecs.
 ///
 /// Returns `Some((seq, qual))` if the read passes, or `None` if it should be dropped.
-fn apply_filters_owned(
+pub(crate) fn apply_filters_owned(
     mut seq: Vec<u8>,
     mut qual: Vec<u8>,
     cfg: &FilterConfig,
@@ -211,6 +347,63 @@ mod tests {
         let cfg = FilterConfig { max_ee: 0.1, min_len: 1, ..Default::default() };
         let stats = filter_and_trim(&cfg, inp.path(), out.path()).unwrap();
         assert_eq!(stats.reads_out, 0);
+    }
+
+    #[test]
+    fn test_filter_and_trim_paired_basic() {
+        // 5 pairs; read 3 (index 2) of R1 has bad quality → fwd_failed == 1, pairs_out == 4
+        let good_seq = "ACGTACGTACGT";
+        let good_qual = "IIIIIIIIIIII"; // Phred 40
+
+        let mut r1_lines = Vec::new();
+        let mut r2_lines = Vec::new();
+        for i in 0..5 {
+            let (_seq, qual) = if i == 2 {
+                // Force EE failure: '!' = Phred 0 → EE = 12 per base
+                (good_seq, "!!!!!!!!!!!!".into())
+            } else {
+                (good_seq, good_qual.to_owned())
+            };
+            r1_lines.push(format!("@r{i}\n{good_seq}\n+\n{qual}"));
+            r2_lines.push(format!("@r{i}\n{good_seq}\n+\n{good_qual}"));
+        }
+        let r1_in = write_temp_fastq(
+            &r1_lines
+                .iter()
+                .map(|s| {
+                    let parts: Vec<&str> = s.lines().collect();
+                    (parts[0].trim_start_matches('@'), parts[1], parts[3])
+                })
+                .collect::<Vec<_>>(),
+        );
+        let r2_in = write_temp_fastq(
+            &r2_lines
+                .iter()
+                .map(|s| {
+                    let parts: Vec<&str> = s.lines().collect();
+                    (parts[0].trim_start_matches('@'), parts[1], parts[3])
+                })
+                .collect::<Vec<_>>(),
+        );
+        let r1_out = NamedTempFile::new().unwrap();
+        let r2_out = NamedTempFile::new().unwrap();
+
+        let cfg_fwd = FilterConfig { max_ee: 0.5, min_len: 1, ..Default::default() };
+        let cfg_rev = FilterConfig { max_ee: 100.0, min_len: 1, ..Default::default() };
+
+        let stats = filter_and_trim_paired(
+            &cfg_fwd,
+            &cfg_rev,
+            r1_in.path(),
+            r2_in.path(),
+            r1_out.path(),
+            r2_out.path(),
+        )
+        .unwrap();
+
+        assert_eq!(stats.reads_in, 5);
+        assert_eq!(stats.pairs_out, 4);
+        assert_eq!(stats.fwd_failed, 1);
     }
 
     #[test]

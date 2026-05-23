@@ -16,6 +16,7 @@ pub struct UniqueSeq {
 
 impl UniqueSeq {
     /// Mean Phred quality at position `i` (returns 0 if out of bounds).
+    #[must_use]
     pub fn mean_qual(&self, i: usize) -> f64 {
         if i >= self.qual_sum.len() || self.count == 0 {
             return 0.0;
@@ -53,6 +54,10 @@ pub fn dereplicate(records: &[FastqRecord]) -> Result<Vec<UniqueSeq>, Dada2Error
 
     // Deterministic sort: descending count, then lexicographic sequence as tiebreak
     uniques.sort_unstable_by(|a, b| b.count.cmp(&a.count).then_with(|| a.seq.cmp(&b.seq)));
+
+    let total: u64 = uniques.iter().map(|u| u64::from(u.count)).sum();
+    let n_uniq = uniques.len();
+    log::info!("dereplicate: {total} reads → {n_uniq} unique sequences");
 
     Ok(uniques)
 }

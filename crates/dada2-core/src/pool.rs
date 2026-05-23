@@ -18,7 +18,7 @@ use std::{
 pub struct PoolEntry {
     /// Total count across all samples.
     pub total_count: u32,
-    /// (sample_index, count) pairs for reassignment after DADA.
+    /// (`sample_index`, count) pairs for reassignment after DADA.
     pub per_sample: Vec<(usize, u32)>,
     /// Per-position quality sum accumulated from all samples.
     pub qual_sum: Vec<f64>,
@@ -40,7 +40,7 @@ impl PoolStore {
     /// Create a new empty pool store.
     ///
     /// `flush_threshold` controls how many unique sequences are held in RAM
-    /// before a chunk is flushed to disk.  A value of 500_000 uses roughly
+    /// before a chunk is flushed to disk.  A value of `500_000` uses roughly
     /// 200 MB for 200-bp sequences.
     ///
     /// # Errors

@@ -8,6 +8,7 @@
 use crate::{Dada2Error, Kmer, io::fasta::FastaRecord};
 use rayon::prelude::*;
 use std::collections::HashMap;
+use std::path::Path;
 
 /// Default k-mer length.
 pub const DEFAULT_K: usize = 8;
@@ -73,6 +74,7 @@ impl TaxonomyDb {
     ///
     /// # Errors
     /// Returns [`Dada2Error::InvalidInput`] if k > 16 or records are empty.
+    #[allow(clippy::implicit_hasher)]
     pub fn build(
         records: &[FastaRecord],
         lineages: &HashMap<String, Vec<String>>,
@@ -85,13 +87,16 @@ impl TaxonomyDb {
             return Err(Dada2Error::InvalidInput("reference database is empty".into()));
         }
 
+        #[allow(clippy::cast_possible_truncation)]
         let n_kmers = 4usize.pow(cfg.k as u32);
         let profiles: Vec<(String, Vec<u32>)> = records
             .iter()
             .map(|rec| {
                 let mut counts = vec![0u32; n_kmers];
                 for kmer in kmers(&rec.seq, cfg.k) {
-                    counts[kmer.0 as usize] = counts[kmer.0 as usize].saturating_add(1);
+                    #[allow(clippy::cast_possible_truncation)]
+                    let idx = kmer.0 as usize;
+                    counts[idx] = counts[idx].saturating_add(1);
                 }
                 (rec.id.clone(), counts)
             })
@@ -113,6 +118,8 @@ impl TaxonomyDb {
             return Err(Dada2Error::InvalidInput("no sequences to classify".into()));
         }
 
+        let n = seqs.len();
+        log::info!("assign_taxonomy: classifying {n} sequences");
         let assignments: Vec<TaxonAssignment> = seqs
             .par_iter()
             .map(|seq| self.classify_one(seq, cfg))
@@ -122,6 +129,10 @@ impl TaxonomyDb {
     }
 
     fn classify_one(&self, seq: &[u8], cfg: &TaxonomyConfig) -> TaxonAssignment {
+        fn get(lin: Option<&Vec<String>>, i: usize) -> Option<String> {
+            lin.and_then(|l| l.get(i)).filter(|s| !s.is_empty()).cloned()
+        }
+
         let query_kmers: Vec<Kmer> = kmers(seq, self.k).collect();
         let best_label = self.best_match(&query_kmers);
 
@@ -135,6 +146,7 @@ impl TaxonomyDb {
             seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
             let subsample: Vec<Kmer> = (0..n_sub)
                 .map(|i| {
+                    #[allow(clippy::cast_possible_truncation)]
                     let idx = ((seed >> (i % 8)) as usize) % query_kmers.len().max(1);
                     query_kmers[idx]
                 })
@@ -150,12 +162,9 @@ impl TaxonomyDb {
             }
         }
 
+        #[allow(clippy::cast_precision_loss)]
         let confidence = f64::from(genus_hits) / N_BOOTSTRAP as f64;
         let lineage = self.lineages.get(&best_label);
-
-        fn get(lin: Option<&Vec<String>>, i: usize) -> Option<String> {
-            lin.and_then(|l| l.get(i)).filter(|s| !s.is_empty()).cloned()
-        }
 
         TaxonAssignment {
             asv: hex_encode(seq),
@@ -174,6 +183,7 @@ impl TaxonomyDb {
         self.profiles
             .iter()
             .map(|(label, counts)| {
+                #[allow(clippy::cast_possible_truncation)]
                 let score: u64 = query_kmers
                     .iter()
                     .map(|k| u64::from(counts[k.0 as usize]))
@@ -190,10 +200,46 @@ impl TaxonomyDb {
     }
 }
 
+/// Load a lineage map from a tab-separated file.
+///
+/// Expected format (one entry per line):
+/// ```text
+/// seq_id\tkingdom;phylum;class;order;family;genus;species
+/// ```
+///
+/// # Errors
+/// Returns [`Dada2Error::Io`] on read failure, [`Dada2Error::Parse`] for malformed lines.
+pub fn load_lineage_tsv(path: &Path) -> Result<HashMap<String, Vec<String>>, Dada2Error> {
+    use std::io::{BufRead, BufReader};
+    let file = std::fs::File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut map = HashMap::new();
+
+    for (line_num, line) in reader.lines().enumerate() {
+        let line = line?;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(2, '\t');
+        let seq_id = parts.next().ok_or_else(|| {
+            Dada2Error::Parse(format!("missing seq_id on line {}", line_num + 1))
+        })?;
+        let lineage_str = parts.next().ok_or_else(|| {
+            Dada2Error::Parse(format!("missing lineage on line {}", line_num + 1))
+        })?;
+        let lineage: Vec<String> = lineage_str.split(';').map(|s| s.trim().to_owned()).collect();
+        map.insert(seq_id.to_owned(), lineage);
+    }
+
+    Ok(map)
+}
+
 /// Assign taxonomy to ASV sequences using a reference FASTA file.
 ///
 /// # Errors
 /// Returns [`Dada2Error`] on I/O or classification failure.
+#[allow(clippy::implicit_hasher)]
 pub fn assign_taxonomy(
     seqs: &[Vec<u8>],
     ref_records: &[FastaRecord],
@@ -227,7 +273,11 @@ fn encode_kmer(slice: &[u8], _k: usize) -> Option<Kmer> {
 }
 
 fn hex_encode(seq: &[u8]) -> String {
-    seq.iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write as _;
+    seq.iter().fold(String::with_capacity(seq.len() * 2), |mut acc, b| {
+        let _ = write!(acc, "{b:02x}");
+        acc
+    })
 }
 
 #[cfg(test)]
@@ -237,8 +287,25 @@ mod tests {
 
     fn make_ref(id: &str, seq: &str, lineage: &[&str]) -> (FastaRecord, (String, Vec<String>)) {
         let rec = FastaRecord { id: id.into(), description: None, seq: seq.bytes().collect() };
-        let lin = lineage.iter().map(|s| s.to_string()).collect();
+        let lin = lineage.iter().map(|s| (*s).to_owned()).collect();
         (rec, (id.to_string(), lin))
+    }
+
+    #[test]
+    fn load_lineage_tsv_round_trip() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "seq1\tBacteria;Firmicutes;Bacilli;Lactobacillales;Lactobacillaceae;Lactobacillus;acidophilus").unwrap();
+        writeln!(f, "seq2\tBacteria;Proteobacteria;Gammaproteobacteria;Pseudomonadales;Pseudomonadaceae;Pseudomonas;aeruginosa").unwrap();
+
+        let map = load_lineage_tsv(f.path()).unwrap();
+        assert_eq!(map.len(), 2);
+        let l1 = map.get("seq1").unwrap();
+        assert_eq!(l1[0], "Bacteria");
+        assert_eq!(l1[5], "Lactobacillus");
+        assert_eq!(l1[6], "acidophilus");
+        let l2 = map.get("seq2").unwrap();
+        assert_eq!(l2[5], "Pseudomonas");
     }
 
     #[test]

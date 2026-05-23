@@ -81,7 +81,7 @@ pub fn merge_pairs(
         }
     }
 
-    merged.sort_unstable_by(|a, b| b.abundance.cmp(&a.abundance));
+    merged.sort_unstable_by_key(|m| std::cmp::Reverse(m.abundance));
     Ok(merged)
 }
 
@@ -112,6 +112,7 @@ fn find_overlap(
 }
 
 /// Compute the reverse complement of a nucleotide sequence.
+#[must_use]
 pub fn reverse_complement(seq: &[u8]) -> Vec<u8> {
     seq.iter()
         .rev()

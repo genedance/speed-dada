@@ -213,6 +213,7 @@ name = "dada2-py"
 version = "0.1.0"
 dependencies = [
  "dada2-core",
+ "env_logger",
  "pyo3",
  "serde_json",
 ]

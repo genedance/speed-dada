@@ -9,6 +9,7 @@
 /// Processes up to `min(a.len(), b.len())` positions.
 /// LLVM auto-vectorises this to SIMD on all major architectures.
 #[inline]
+#[must_use]
 pub fn hamming_distance(a: &[u8], b: &[u8]) -> u32 {
     a.iter()
         .zip(b.iter())
@@ -20,12 +21,14 @@ pub fn hamming_distance(a: &[u8], b: &[u8]) -> u32 {
 ///
 /// Returns `None` if the sequences are identical up to `min(a.len(), b.len())`.
 #[inline]
+#[must_use]
 pub fn first_mismatch(a: &[u8], b: &[u8]) -> Option<usize> {
     a.iter().zip(b.iter()).position(|(x, y)| x != y)
 }
 
 /// Check whether `a[start..end] == b[start..end]`.
 #[inline]
+#[must_use]
 pub fn range_equal(a: &[u8], b: &[u8], start: usize, end: usize) -> bool {
     let end = end.min(a.len()).min(b.len());
     if start >= end {

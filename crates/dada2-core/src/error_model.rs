@@ -2,24 +2,24 @@
 //!
 //! Fits a logistic regression  P(obs | true, q) = σ(a + b·q)  for each of
 //! the 16 base-transition classes.  The resulting [`ErrorModel`] is a
-//! 16 × max_qual matrix of substitution probabilities.
+//! `16 × max_qual` matrix of substitution probabilities.
 
 use crate::{Dada2Error, Phred};
 use ndarray::{Array1, Array2};
 use serde::{Deserialize, Serialize};
 
-/// Index encoding for the 16 transition classes (true_base × 4 + obs_base).
+/// Index encoding for the 16 transition classes (`true_base × 4 + obs_base`).
 /// Bases: 0=A, 1=C, 2=G, 3=T.
 pub const N_TRANSITIONS: usize = 16;
 
 /// Maximum Phred score stored in the error matrix.
 pub const MAX_QUAL: usize = 41;
 
-/// Learned error model: a 16 × MAX_QUAL matrix of P(obs | true, q).
+/// Learned error model: a `16 × MAX_QUAL` matrix of P(obs | true, q).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorModel {
     /// `matrix[[trans, q]]` = P(observing obs-base | true-base, Phred q).
-    /// Rows 0..16 index transitions (true*4+obs); columns 0..MAX_QUAL index Phred.
+    /// Rows 0..16 index transitions (`true*4+obs`); columns 0..`MAX_QUAL` index Phred.
     pub matrix: Array2<f64>,
     /// Number of reads used to fit this model.
     pub n_reads_used: u64,
@@ -37,6 +37,7 @@ impl ErrorModel {
     }
 
     /// Compute the log-likelihood that `obs` was produced from `truth` under this model.
+    #[must_use]
     pub fn log_likelihood(&self, truth: &[u8], obs: &[u8], quals: &[u8]) -> f64 {
         truth
             .iter()
@@ -61,6 +62,7 @@ impl ErrorModel {
         for row in 0..N_TRANSITIONS {
             let is_match = row % 5 == 0; // diagonal = A→A, C→C, G→G, T→T
             for col in 0..MAX_QUAL {
+                #[allow(clippy::cast_precision_loss)]
                 let q = col as f64;
                 // P(error) from Phred definition
                 let p_err = 10f64.powf(-q / 10.0);
@@ -133,6 +135,7 @@ pub fn learn_errors(
         let is_match = row % 5 == 0;
         let params = fit_logistic_row(&counts.row(row).to_owned(), is_match, cfg)?;
         for col in 0..MAX_QUAL {
+            #[allow(clippy::cast_precision_loss)]
             let q = col as f64;
             matrix[[row, col]] = sigmoid(params[0] + params[1] * q);
         }
@@ -142,6 +145,7 @@ pub fn learn_errors(
 }
 
 /// Fit a 2-parameter logistic model σ(a + b·q) to a count vector by gradient descent.
+#[allow(clippy::many_single_char_names)]
 fn fit_logistic_row(
     counts: &Array1<f64>,
     is_match: bool,
@@ -158,12 +162,14 @@ fn fit_logistic_row(
     }
 
     let mut prev_ll = f64::NEG_INFINITY;
+    let mut first_step = true;
     for _iter in 0..cfg.max_iter {
         let mut ga = 0.0_f64;
         let mut gb = 0.0_f64;
         let mut ll = 0.0_f64;
 
         for col in 0..MAX_QUAL {
+            #[allow(clippy::cast_precision_loss)]
             let q = col as f64;
             let p = sigmoid(a + b * q);
             let c = counts[col];
@@ -179,15 +185,29 @@ fn fit_logistic_row(
         a += lr * ga;
         b += lr * gb;
 
-        if (ll - prev_ll).abs() < cfg.tol {
+        // After the first gradient update, check for numerical failure.
+        if first_step {
+            first_step = false;
+            if !a.is_finite() || !b.is_finite() {
+                return Err(Dada2Error::Convergence(
+                    "logistic regression produced NaN/Inf on first iteration".into(),
+                ));
+            }
+        }
+
+        let delta = (ll - prev_ll).abs();
+        log::debug!("learn_errors iter: ΔlogL = {delta:.2e}");
+        if delta < cfg.tol {
             return Ok([a, b]);
         }
         prev_ll = ll;
     }
 
-    Err(Dada2Error::Convergence(
-        "logistic regression did not converge within max_iter".into(),
-    ))
+    log::warn!(
+        "logistic regression did not converge within {} iterations; using best-so-far parameters",
+        cfg.max_iter
+    );
+    Ok([a, b])
 }
 
 #[inline]
@@ -197,13 +217,13 @@ fn sigmoid(x: f64) -> f64 {
 
 /// Map a nucleotide byte to an index 0=A,1=C,2=G,3=T (N/other → 0).
 #[inline]
+#[must_use]
 pub fn base_index(b: u8) -> u8 {
     match b.to_ascii_uppercase() {
-        b'A' => 0,
         b'C' => 1,
         b'G' => 2,
         b'T' => 3,
-        _ => 0,
+        _ => 0, // A, N, or anything else
     }
 }
 

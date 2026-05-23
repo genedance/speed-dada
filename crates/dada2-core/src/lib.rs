@@ -22,6 +22,9 @@ pub mod filter;
 pub mod io;
 pub mod merge;
 pub mod pool;
+pub mod primer;
+pub mod quality_profile;
+pub mod sequence_table;
 pub mod taxonomy;
 
 use thiserror::Error;
@@ -52,11 +55,13 @@ pub struct Phred(pub u8);
 
 impl Phred {
     /// Convert ASCII quality character (Phred+33 encoding) to [`Phred`].
+    #[must_use]
     pub fn from_ascii(c: u8) -> Self {
         Self(c.saturating_sub(33))
     }
 
     /// Return the error probability P = 10^(-Q/10).
+    #[must_use]
     pub fn error_prob(self) -> f64 {
         10f64.powf(-f64::from(self.0) / 10.0)
     }

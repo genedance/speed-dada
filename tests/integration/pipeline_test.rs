@@ -21,7 +21,8 @@ fn generate_reads(true_seq: &[u8], n: usize, error_rate: f64, seed: u64) -> Vec<
 
         for j in 0..seq.len() {
             rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
-            let p = (rng >> 33) as f64 / (u32::MAX as f64);
+            #[allow(clippy::cast_precision_loss, clippy::cast_lossless)]
+            let p = (rng >> 33) as f64 / f64::from(u32::MAX);
             if p < error_rate {
                 // Random substitution
                 let bases = [b'A', b'C', b'G', b'T'];
@@ -85,6 +86,7 @@ fn pipeline_recovers_true_asv() {
         .zip(true_seq[..cmp_len].iter())
         .filter(|(a, b)| a == b)
         .count();
+    #[allow(clippy::cast_precision_loss)]
     let identity = matches as f64 / cmp_len as f64;
     assert!(
         identity >= 0.95,
