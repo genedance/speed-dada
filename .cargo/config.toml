@@ -1,0 +1,9 @@
+[build]
+# Enable native CPU feature detection so LLVM emits AVX2/NEON/SSE4 SIMD
+# for the auto-vectorised loops in align.rs.
+rustflags = ["-C", "target-cpu=native"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

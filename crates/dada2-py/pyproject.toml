@@ -1,0 +1,20 @@
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "dada2"
+version = "0.1.0"
+description = "High-performance DADA2 ASV pipeline — Rust core with Python bindings"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "dada2"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
