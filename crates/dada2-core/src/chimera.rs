@@ -21,7 +21,7 @@ const MIN_ARM_LEN: usize = 8;
 ///
 /// # Errors
 /// Always succeeds; returns `Ok` for API uniformity.
-pub fn remove_bimeras(
+pub fn remove_bimera_denovo(
     seqs: &[(Vec<u8>, u32)],
 ) -> Result<Vec<(Vec<u8>, u32)>, Dada2Error> {
     let n_in = seqs.len();
@@ -113,7 +113,7 @@ mod tests {
             (p2, 900),
             (bimera, 50),
         ];
-        let result = remove_bimeras(&seqs).unwrap();
+        let result = remove_bimera_denovo(&seqs).unwrap();
         // Bimera should be removed
         assert_eq!(result.len(), 2, "bimera should have been removed");
     }
@@ -123,7 +123,7 @@ mod tests {
         let s1: Vec<u8> = b"AAAAAAAAAACCCCCCCCCC".to_vec();
         let s2: Vec<u8> = b"GGGGGGGGGGTTTTTTTTTT".to_vec();
         let seqs = vec![(s1, 100), (s2, 80)];
-        let result = remove_bimeras(&seqs).unwrap();
+        let result = remove_bimera_denovo(&seqs).unwrap();
         assert_eq!(result.len(), 2);
     }
 }

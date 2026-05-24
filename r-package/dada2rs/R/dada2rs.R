@@ -52,7 +52,7 @@ filterAndTrim <- function(fwd, filt, rev = NULL, filt.rev = NULL,
   maxEE    <- to2(maxEE)
 
   paired <- !is.null(rev)
-  raw <- .Call("wrap__r_filter_and_trim",
+  raw <- .Call("wrap__filterAndTrim",
     as.character(fwd),
     as.character(filt),
     if (paired) as.character(rev)      else NULL,
@@ -90,7 +90,7 @@ learnErrors <- function(fls, nbases = 1e8, multithread = FALSE, ...) {
   if (length(fls) == 1L && dir.exists(fls)) {
     fls <- list.files(fls, pattern = "\\.fastq(\\.gz)?$", full.names = TRUE)
   }
-  .Call("wrap__r_learn_errors", as.character(fls), as.double(nbases))
+  .Call("wrap__learnErrors", as.character(fls), as.double(nbases))
 }
 
 # ── 3. derepFastq ────────────────────────────────────────────────────────────
@@ -104,7 +104,7 @@ learnErrors <- function(fls, nbases = 1e8, multithread = FALSE, ...) {
 #'         For multiple files: a named list of such objects.
 derepFastq <- function(fls, verbose = FALSE, ...) {
   make_derep <- function(path) {
-    raw <- .Call("wrap__r_derep_fastq", as.character(path))
+    raw <- .Call("wrap__derepFastq", as.character(path))
     uniq <- as.integer(raw$counts)
     names(uniq) <- raw$seqs
     structure(list(uniques = uniq, quals = NULL, map = NULL), class = "derep")
@@ -144,7 +144,7 @@ dada <- function(derep, err, selfConsist = FALSE, pool = FALSE,
   run_one <- function(d) {
     if (!inherits(d, "derep")) stop("dada2rs: each element of derep must be a 'derep' object")
     uniq <- d$uniques
-    raw <- .Call("wrap__r_dada",
+    raw <- .Call("wrap__dada",
       as.character(names(uniq)),
       as.integer(uniq),
       err,
@@ -183,7 +183,7 @@ mergePairs <- function(dadaF, derepF, dadaR, derepR,
   fwd <- dadaF$denoised
   rev <- dadaR$denoised
 
-  raw <- .Call("wrap__r_merge_pairs",
+  raw <- .Call("wrap__mergePairs",
     as.character(names(fwd)), as.integer(fwd),
     as.character(names(rev)),  as.integer(rev),
     as.integer(minOverlap),
@@ -230,7 +230,7 @@ makeSequenceTable <- function(samples, orderBy = "abundance") {
     all_idx    <- c(all_idx,    rep(i - 1L, length(uniq)))
   }
 
-  raw <- .Call("wrap__r_make_sequence_table",
+  raw <- .Call("wrap__makeSequenceTable",
     as.character(snames),
     as.character(all_seqs),
     as.integer(all_counts),
@@ -263,13 +263,13 @@ removeBimeraDenovo <- function(unqs, method = "consensus",
   if (is.matrix(unqs)) {
     seqs   <- colnames(unqs)
     counts <- as.integer(colSums(unqs))
-    mask   <- .Call("wrap__r_remove_bimera_denovo",
+    mask   <- .Call("wrap__removeBimeraDenovo",
                     as.character(seqs), as.integer(counts))
     return(unqs[, mask == 1L, drop = FALSE])
   }
 
   uniq <- .get_uniques(unqs)
-  mask <- .Call("wrap__r_remove_bimera_denovo",
+  mask <- .Call("wrap__removeBimeraDenovo",
                 as.character(names(uniq)), as.integer(uniq))
   uniq[mask == 1L]
 }

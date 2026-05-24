@@ -31,7 +31,7 @@ impl UniqueSeq {
 ///
 /// # Errors
 /// Always succeeds; returns `Ok` for API consistency.
-pub fn dereplicate(records: &[FastqRecord]) -> Result<Vec<UniqueSeq>, Dada2Error> {
+pub fn derep_fastq(records: &[FastqRecord]) -> Result<Vec<UniqueSeq>, Dada2Error> {
     let mut map: HashMap<Vec<u8>, (u32, Vec<f64>)> = HashMap::new();
 
     for rec in records {
@@ -84,7 +84,7 @@ mod tests {
             make("AAAA"),
             make("TTTT"),
         ];
-        let uniq = dereplicate(&records).unwrap();
+        let uniq = derep_fastq(&records).unwrap();
         assert_eq!(uniq.len(), 3, "expected 3 unique sequences");
 
         // Most abundant first

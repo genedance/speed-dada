@@ -7,9 +7,9 @@
 #![allow(clippy::doc_markdown)]
 
 use dada2_core::{
-    chimera::remove_bimeras,
-    dada::{run_dada, run_dada_pooled, Asv, DadaConfig},
-    derep::dereplicate,
+    chimera::remove_bimera_denovo,
+    dada::{dada, dada_pooled, Asv, DadaConfig},
+    derep::derep_fastq,
     error_model::{learn_errors, ErrorLearningConfig, ErrorModel},
     filter::{filter_and_trim, filter_and_trim_paired, FilterConfig},
     io::{fasta::read_fasta, fastq::read_fastq},
@@ -522,13 +522,13 @@ fn learn_errors_py(
 /// -------
 /// list[tuple[bytes, int]]
 #[pyfunction]
-#[pyo3(name = "dereplicate")]
-fn dereplicate_py(py: Python<'_>, fastq_path: &str) -> PyResult<Vec<(Vec<u8>, u32)>> {
+#[pyo3(name = "derep_fastq")]
+fn derep_fastq_py(py: Python<'_>, fastq_path: &str) -> PyResult<Vec<(Vec<u8>, u32)>> {
     let path = fastq_path.to_owned();
     let uniques = py
         .allow_threads(move || {
             let records = read_fastq(Path::new(&path))?;
-            dereplicate(&records)
+            derep_fastq(&records)
         })
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
     Ok(uniques.into_iter().map(|u| (u.seq, u.count)).collect())
@@ -547,9 +547,9 @@ fn dereplicate_py(py: Python<'_>, fastq_path: &str) -> PyResult<Vec<(Vec<u8>, u3
 /// -------
 /// DadaResult
 #[pyfunction]
-#[pyo3(name = "run_dada")]
+#[pyo3(name = "dada")]
 #[pyo3(signature = (derep, error_model, omega_a = 1e-40, pool = false))]
-fn run_dada_py(
+fn dada_py(
     py: Python<'_>,
     derep: Vec<(Vec<u8>, u32)>,
     error_model: &PyErrorModel,
@@ -567,7 +567,7 @@ fn run_dada_py(
                 })
                 .collect();
             let cfg = DadaConfig { omega_a, pool, ..Default::default() };
-            run_dada(&uniques, &inner_em, &cfg)
+            dada(&uniques, &inner_em, &cfg)
         })
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
     Ok(PyDadaResult(asvs))
@@ -587,9 +587,9 @@ fn run_dada_py(
 /// list[DadaResult]
 ///     One result per input sample.
 #[pyfunction]
-#[pyo3(name = "run_dada_pooled")]
+#[pyo3(name = "dada_pooled")]
 #[pyo3(signature = (samples, error_model, omega_a = 1e-40))]
-fn run_dada_pooled_py(
+fn dada_pooled_py(
     py: Python<'_>,
     samples: Vec<Vec<(Vec<u8>, u32)>>,
     error_model: &PyErrorModel,
@@ -612,7 +612,7 @@ fn run_dada_pooled_py(
             let refs: Vec<&[dada2_core::derep::UniqueSeq]> =
                 converted.iter().map(Vec::as_slice).collect();
             let cfg = DadaConfig { omega_a, ..Default::default() };
-            run_dada_pooled(&refs, &inner_em, &cfg)
+            dada_pooled(&refs, &inner_em, &cfg)
         })
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
     Ok(results.into_iter().map(PyDadaResult).collect())
@@ -659,10 +659,10 @@ fn merge_pairs_py(
 /// -------
 /// list[bytes]
 #[pyfunction]
-#[pyo3(name = "remove_bimeras")]
-fn remove_bimeras_py(py: Python<'_>, seqs: Vec<(Vec<u8>, u32)>) -> PyResult<Vec<Vec<u8>>> {
+#[pyo3(name = "remove_bimera_denovo")]
+fn remove_bimera_denovo_py(py: Python<'_>, seqs: Vec<(Vec<u8>, u32)>) -> PyResult<Vec<Vec<u8>>> {
     let result = py
-        .allow_threads(move || remove_bimeras(&seqs))
+        .allow_threads(move || remove_bimera_denovo(&seqs))
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
     Ok(result.into_iter().map(|(s, _)| s).collect())
 }
@@ -797,15 +797,15 @@ fn run_pipeline_py(
             let mut all_asvs: Vec<(Vec<u8>, u32)> = Vec::new();
             for path in &filtered_paths {
                 let records = read_fastq(path)?;
-                let uniques = dereplicate(&records)?;
-                let asvs = run_dada(&uniques, &error_model, &dada_cfg)?;
+                let uniques = derep_fastq(&records)?;
+                let asvs = dada(&uniques, &error_model, &dada_cfg)?;
                 for asv in asvs {
                     all_asvs.push((asv.sequence, asv.abundance));
                 }
             }
 
             // Remove bimeras from pooled ASVs
-            let clean = remove_bimeras(&all_asvs)?;
+            let clean = remove_bimera_denovo(&all_asvs)?;
 
             // Return as hex-encoded sequence → abundance map
             let mut out_map = HashMap::new();
@@ -852,11 +852,11 @@ fn dada2(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(filter_and_trim_py, m)?)?;
     m.add_function(wrap_pyfunction!(filter_and_trim_paired_py, m)?)?;
     m.add_function(wrap_pyfunction!(learn_errors_py, m)?)?;
-    m.add_function(wrap_pyfunction!(dereplicate_py, m)?)?;
-    m.add_function(wrap_pyfunction!(run_dada_py, m)?)?;
-    m.add_function(wrap_pyfunction!(run_dada_pooled_py, m)?)?;
+    m.add_function(wrap_pyfunction!(derep_fastq_py, m)?)?;
+    m.add_function(wrap_pyfunction!(dada_py, m)?)?;
+    m.add_function(wrap_pyfunction!(dada_pooled_py, m)?)?;
     m.add_function(wrap_pyfunction!(merge_pairs_py, m)?)?;
-    m.add_function(wrap_pyfunction!(remove_bimeras_py, m)?)?;
+    m.add_function(wrap_pyfunction!(remove_bimera_denovo_py, m)?)?;
     m.add_function(wrap_pyfunction!(assign_taxonomy_py, m)?)?;
     m.add_function(wrap_pyfunction!(run_pipeline_py, m)?)?;
 

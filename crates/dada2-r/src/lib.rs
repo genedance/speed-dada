@@ -1,4 +1,5 @@
 //! `extendr` bindings for dada2-core — exposes the DADA2 pipeline as an R package.
+#![allow(non_snake_case)]
 //!
 //! Each function mirrors a step in the R dada2 API so the R wrapper layer can
 //! call it via `.Call("wrap__<fn>", ...)`.  Errors are surfaced by panicking;
@@ -8,9 +9,9 @@
 use extendr_api::prelude::*;
 
 use dada2_core::{
-    chimera::remove_bimeras,
-    dada::{run_dada, Asv, DadaConfig},
-    derep::{dereplicate, UniqueSeq},
+    chimera::remove_bimera_denovo,
+    dada::{dada as dada_core, Asv, DadaConfig},
+    derep::{derep_fastq, UniqueSeq},
     error_model::{learn_errors, ErrorLearningConfig, ErrorModel},
     filter::{filter_and_trim_many, filter_and_trim_paired_many, FilterConfig},
     io::fastq::read_fastq,
@@ -53,7 +54,7 @@ fn asvs_from_r(seqs: &[String], counts: &[i32]) -> Vec<Asv> {
         .collect()
 }
 
-// ── 1. filter_and_trim ────────────────────────────────────────────────────────
+// ── 1. filterAndTrim ─────────────────────────────────────────────────────────
 
 /// Filter and trim FASTQ files (single- or paired-end).
 ///
@@ -62,7 +63,7 @@ fn asvs_from_r(seqs: &[String], counts: &[i32]) -> Vec<Asv> {
 /// `[n × 2]` matrix that dada2's `filterAndTrim` returns.
 #[allow(clippy::too_many_arguments)]
 #[extendr]
-fn r_filter_and_trim(
+fn filterAndTrim(
     fwd: Vec<String>,
     fwd_out: Vec<String>,
     rev: Nullable<Vec<String>>,
@@ -137,14 +138,14 @@ fn r_filter_and_trim(
     list!(reads_in = reads_in, reads_out = reads_out, rownames = rownames)
 }
 
-// ── 2. learn_errors ──────────────────────────────────────────────────────────
+// ── 2. learnErrors ───────────────────────────────────────────────────────────
 
 /// Learn error rates from FASTQ files.
 ///
 /// `nbases` is converted to a read count via `nbases / 150.0`.
 /// Returns an opaque [`RErrorModel`] external pointer.
 #[extendr]
-fn r_learn_errors(fls: Vec<String>, nbases: f64) -> ExternalPtr<RErrorModel> {
+fn learnErrors(fls: Vec<String>, nbases: f64) -> ExternalPtr<RErrorModel> {
     let n_reads = ((nbases / 150.0).round() as usize).clamp(10_000, 10_000_000);
     let mut all_records = Vec::new();
     for path in &fls {
@@ -161,32 +162,32 @@ fn r_learn_errors(fls: Vec<String>, nbases: f64) -> ExternalPtr<RErrorModel> {
     ExternalPtr::new(RErrorModel(model))
 }
 
-// ── 3. derep_fastq ───────────────────────────────────────────────────────────
+// ── 3. derepFastq ────────────────────────────────────────────────────────────
 
 /// Dereplicate one FASTQ file.
 ///
 /// Returns a list `(seqs = character, counts = integer)` — the R wrapper
 /// builds the named integer `$uniques` vector and attaches class `"derep"`.
 #[extendr]
-fn r_derep_fastq(path: &str) -> List {
+fn derepFastq(path: &str) -> List {
     let records =
         read_fastq(Path::new(path)).unwrap_or_else(|e| panic!("derepFastq: {e}"));
     let uniques =
-        dereplicate(&records).unwrap_or_else(|e| panic!("derepFastq: {e}"));
+        derep_fastq(&records).unwrap_or_else(|e| panic!("derepFastq: {e}"));
     let seqs: Vec<String> =
         uniques.iter().map(|u| String::from_utf8_lossy(&u.seq).into_owned()).collect();
     let counts: Vec<i32> = uniques.iter().map(|u| u.count as i32).collect();
     list!(seqs = seqs, counts = counts)
 }
 
-// ── 4. run_dada ──────────────────────────────────────────────────────────────
+// ── 4. dada ──────────────────────────────────────────────────────────────────
 
 /// Run DADA denoising on a single sample.
 ///
 /// Accepts a dereplicated sample as parallel `seqs` / `counts` vectors.
 /// Returns `(seqs = character, counts = integer)` for the denoised ASVs.
 #[extendr]
-fn r_dada(
+fn dada(
     seqs: Vec<String>,
     counts: Vec<i32>,
     err: ExternalPtr<RErrorModel>,
@@ -196,21 +197,21 @@ fn r_dada(
     let uniques = uniques_from_r(&seqs, &counts);
     let cfg = DadaConfig { omega_a, pool, ..Default::default() };
     let asvs =
-        run_dada(&uniques, &err.0, &cfg).unwrap_or_else(|e| panic!("dada: {e}"));
+        dada_core(&uniques, &err.0, &cfg).unwrap_or_else(|e| panic!("dada: {e}"));
     let out_seqs: Vec<String> =
         asvs.iter().map(|a| String::from_utf8_lossy(&a.sequence).into_owned()).collect();
     let out_counts: Vec<i32> = asvs.iter().map(|a| a.abundance as i32).collect();
     list!(seqs = out_seqs, counts = out_counts)
 }
 
-// ── 5. merge_pairs ───────────────────────────────────────────────────────────
+// ── 5. mergePairs ────────────────────────────────────────────────────────────
 
 /// Merge paired-end ASVs.
 ///
 /// Returns a list-formatted data.frame with columns `sequence`, `abundance`,
 /// `accept`, `nmatch`, `nmismatch`, `nindel` — matches dada2's `mergePairs`.
 #[extendr]
-fn r_merge_pairs(
+fn mergePairs(
     fwd_seqs: Vec<String>,
     fwd_counts: Vec<i32>,
     rev_seqs: Vec<String>,
@@ -250,14 +251,14 @@ fn r_merge_pairs(
     )
 }
 
-// ── 6. make_sequence_table ───────────────────────────────────────────────────
+// ── 6. makeSequenceTable ─────────────────────────────────────────────────────
 
 /// Build a sample × ASV count matrix.
 ///
 /// Inputs are flat parallel vectors covering all samples.  Returns a list
 /// `(data, seqs, samples)` that the R wrapper reshapes into an integer matrix.
 #[extendr]
-fn r_make_sequence_table(
+fn makeSequenceTable(
     sample_names: Vec<String>,
     all_seqs: Vec<String>,
     all_counts: Vec<i32>,
@@ -305,20 +306,21 @@ fn r_make_sequence_table(
     list!(data = final_mat, seqs = asv_strings, samples = sample_names)
 }
 
-// ── 7. remove_bimera_denovo ──────────────────────────────────────────────────
+// ── 7. removeBimeraDenovo ────────────────────────────────────────────────────
 
 /// Identify chimeric ASVs.
 ///
 /// Returns an integer vector (1 = keep, 0 = chimera) parallel to `seqs`.
 #[extendr]
-fn r_remove_bimera_denovo(seqs: Vec<String>, counts: Vec<i32>) -> Vec<i32> {
+fn removeBimeraDenovo(seqs: Vec<String>, counts: Vec<i32>) -> Vec<i32> {
     let pairs: Vec<(Vec<u8>, u32)> = seqs
         .iter()
         .zip(counts.iter())
         .map(|(s, &c)| (s.as_bytes().to_vec(), c as u32))
         .collect();
 
-    let clean = remove_bimeras(&pairs).unwrap_or_else(|e| panic!("removeBimeraDenovo: {e}"));
+    let clean = remove_bimera_denovo(&pairs)
+        .unwrap_or_else(|e| panic!("removeBimeraDenovo: {e}"));
     let kept: std::collections::HashSet<&[u8]> =
         clean.iter().map(|(s, _)| s.as_slice()).collect();
 
@@ -330,11 +332,11 @@ fn r_remove_bimera_denovo(seqs: Vec<String>, counts: Vec<i32>) -> Vec<i32> {
 extendr_module! {
     mod dada2rs;
     impl RErrorModel;
-    fn r_filter_and_trim;
-    fn r_learn_errors;
-    fn r_derep_fastq;
-    fn r_dada;
-    fn r_merge_pairs;
-    fn r_make_sequence_table;
-    fn r_remove_bimera_denovo;
+    fn filterAndTrim;
+    fn learnErrors;
+    fn derepFastq;
+    fn dada;
+    fn mergePairs;
+    fn makeSequenceTable;
+    fn removeBimeraDenovo;
 }

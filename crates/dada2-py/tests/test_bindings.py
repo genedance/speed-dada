@@ -39,13 +39,13 @@ def test_learn_errors():
 
 
 def test_run_dada_remove_bimeras_roundtrip():
-    derep = dada2.dereplicate(str(SAMPLE_FASTQ))
+    derep = dada2.derep_fastq(str(SAMPLE_FASTQ))
     assert len(derep) > 0
 
     model = dada2.learn_errors([str(SAMPLE_FASTQ)], n_reads=100)
-    result = dada2.run_dada(derep, model, omega_a=1e-5)
+    result = dada2.dada(derep, model, omega_a=1e-5)
     assert len(result) > 0
 
     seqs_with_abund = [(result[i][0], result[i][1]) for i in range(len(result))]
-    clean = dada2.remove_bimeras(seqs_with_abund)
+    clean = dada2.remove_bimera_denovo(seqs_with_abund)
     assert len(clean) > 0

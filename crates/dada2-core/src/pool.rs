@@ -98,7 +98,7 @@ impl PoolStore {
     }
 
     /// Merge all chunks and the current in-memory state into a final `Vec<UniqueSeq>`
-    /// suitable for passing to [`crate::dada::run_dada`].
+    /// suitable for passing to [`crate::dada::dada`].
     ///
     /// # Errors
     /// Returns [`Dada2Error::Io`] or [`Dada2Error::Parse`] on read failure.

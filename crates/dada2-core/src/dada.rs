@@ -54,13 +54,13 @@ impl Default for DadaConfig {
 ///
 /// # Errors
 /// Returns [`Dada2Error::InvalidInput`] if `uniques` is empty.
-pub fn run_dada(
+pub fn dada(
     uniques: &[UniqueSeq],
     error_model: &ErrorModel,
     cfg: &DadaConfig,
 ) -> Result<Vec<Asv>, Dada2Error> {
     if uniques.is_empty() {
-        return Err(Dada2Error::InvalidInput("no unique sequences supplied to run_dada".into()));
+        return Err(Dada2Error::InvalidInput("no unique sequences supplied to dada".into()));
     }
 
     let total_reads: u64 = uniques.iter().map(|u| u64::from(u.count)).sum();
@@ -116,7 +116,7 @@ pub fn run_dada(
         let n_centres = centres.len();
         let max_iter = cfg.max_iter;
         log::info!(
-            "run_dada: iter {iter}/{max_iter}, {n_centres} centres, ΔlogL = {delta:.2e}"
+            "dada: iter {iter}/{max_iter}, {n_centres} centres, ΔlogL = {delta:.2e}"
         );
         if delta < cfg.tol {
             break;
@@ -149,8 +149,8 @@ pub fn run_dada(
 /// Returns one `Vec<Asv>` per input sample, in the same order.
 ///
 /// # Errors
-/// Returns [`Dada2Error`] if the pool store fails or `run_dada` fails.
-pub fn run_dada_pooled(
+/// Returns [`Dada2Error`] if the pool store fails or [`dada`] fails.
+pub fn dada_pooled(
     samples: &[&[UniqueSeq]],
     error_model: &ErrorModel,
     cfg: &DadaConfig,
@@ -167,7 +167,7 @@ pub fn run_dada_pooled(
     let (pooled_uniques, pool_entries) = store.into_pooled_uniques()?;
 
     // 3. Run DADA on the merged pool
-    let pooled_asvs = run_dada(&pooled_uniques, error_model, cfg)?;
+    let pooled_asvs = dada(&pooled_uniques, error_model, cfg)?;
 
     // 4. Build a lookup: sequence → pool entry index
     let mut seq_to_entry: std::collections::HashMap<&[u8], usize> =
@@ -304,7 +304,7 @@ mod tests {
         let em = ErrorModel::illumina_default();
         let cfg = DadaConfig { omega_a: 0.5, ..Default::default() };
 
-        let result = run_dada_pooled(&[&s1, &s2], &em, &cfg).unwrap();
+        let result = dada_pooled(&[&s1, &s2], &em, &cfg).unwrap();
         assert_eq!(result.len(), 2);
         // Both samples should have at least one ASV
         let total_s1: u32 = result[0].iter().map(|a| a.abundance).sum();
@@ -322,7 +322,7 @@ mod tests {
         let uniques = vec![make_unique("ACGTACGTACGT", 1000)];
         let em = ErrorModel::illumina_default();
         let cfg = DadaConfig::default();
-        let asvs = run_dada(&uniques, &em, &cfg).unwrap();
+        let asvs = dada(&uniques, &em, &cfg).unwrap();
         assert_eq!(asvs.len(), 1);
         assert_eq!(asvs[0].sequence, b"ACGTACGTACGT");
         assert_eq!(asvs[0].abundance, 1000);

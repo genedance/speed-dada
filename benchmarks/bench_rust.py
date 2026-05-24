@@ -1,6 +1,6 @@
 """
 Benchmark the Rust dada2 pipeline on a pair of simulated FASTQs.
-Pipeline: filter_and_trim_paired → learn_errors → derep → run_dada → merge_pairs → remove_bimeras
+Pipeline: filter_and_trim_paired → learn_errors → derep_fastq → dada → merge_pairs → remove_bimera_denovo
 Taxonomy is skipped.
 """
 import sys, time, json
@@ -35,17 +35,17 @@ print(f"[learn_errors]            ({t_err*1000:.1f} ms)")
 
 # 3. Derep
 t1 = time.perf_counter()
-derep_fwd = dada2.dereplicate(filt_r1)
-derep_rev = dada2.dereplicate(filt_r2)
+derep_fwd = dada2.derep_fastq(filt_r1)
+derep_rev = dada2.derep_fastq(filt_r2)
 t_derep = time.perf_counter() - t1
-print(f"[dereplicate]             fwd_uniq={len(derep_fwd)}  rev_uniq={len(derep_rev)}  ({t_derep*1000:.1f} ms)")
+print(f"[derep_fastq]             fwd_uniq={len(derep_fwd)}  rev_uniq={len(derep_rev)}  ({t_derep*1000:.1f} ms)")
 
 # 4. DADA
 t1 = time.perf_counter()
-res_fwd = dada2.run_dada(derep_fwd, model, omega_a=1e-40)
-res_rev = dada2.run_dada(derep_rev, model, omega_a=1e-40)
+res_fwd = dada2.dada(derep_fwd, model, omega_a=1e-40)
+res_rev = dada2.dada(derep_rev, model, omega_a=1e-40)
 t_dada = time.perf_counter() - t1
-print(f"[run_dada]                fwd_asvs={len(res_fwd)}  rev_asvs={len(res_rev)}  ({t_dada*1000:.1f} ms)")
+print(f"[dada]                    fwd_asvs={len(res_fwd)}  rev_asvs={len(res_rev)}  ({t_dada*1000:.1f} ms)")
 
 # 5. Merge paired
 t1 = time.perf_counter()
@@ -55,10 +55,10 @@ print(f"[merge_pairs]             merged={len(merged)}  ({t_merge*1000:.1f} ms)"
 
 # 6. Remove bimeras
 t1 = time.perf_counter()
-clean = dada2.remove_bimeras(merged)
+clean = dada2.remove_bimera_denovo(merged)
 t_chim = time.perf_counter() - t1
 total = time.perf_counter() - t0
-print(f"[remove_bimeras]          asvs_out={len(clean)}  ({t_chim*1000:.1f} ms)")
+print(f"[remove_bimera_denovo]    asvs_out={len(clean)}  ({t_chim*1000:.1f} ms)")
 print(f"\nTotal Rust pipeline time: {total*1000:.1f} ms")
 
 # Build merged dict for abundance lookup

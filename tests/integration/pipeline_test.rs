@@ -1,8 +1,8 @@
 //! End-to-end integration test: synthetic reads → ASV recovery.
 
 use dada2_core::{
-    dada::{run_dada, DadaConfig},
-    derep::dereplicate,
+    dada::{dada, DadaConfig},
+    derep::derep_fastq,
     error_model::{learn_errors, ErrorLearningConfig, ErrorModel},
     filter::{filter_and_trim, FilterConfig},
     io::fastq::{read_fastq, write_fastq, FastqRecord},
@@ -70,12 +70,12 @@ fn pipeline_recovers_true_asv() {
         .unwrap_or_else(|_| ErrorModel::illumina_default());
 
     // Dereplicate
-    let uniques = dereplicate(&filtered_records).unwrap();
+    let uniques = derep_fastq(&filtered_records).unwrap();
     assert!(!uniques.is_empty());
 
     // DADA
     let dada_cfg = DadaConfig { omega_a: 1e-10, ..Default::default() };
-    let asvs = run_dada(&uniques, &error_model, &dada_cfg).unwrap();
+    let asvs = dada(&uniques, &error_model, &dada_cfg).unwrap();
     assert!(!asvs.is_empty(), "DADA returned no ASVs");
 
     // The top ASV should match the true sequence at the truncated length
