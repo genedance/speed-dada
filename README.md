@@ -1,6 +1,9 @@
 # dada2-rs
 
-A high-performance reimplementation of the [DADA2](https://github.com/benjjneb/dada2) amplicon sequence variant (ASV) pipeline, written in Rust with Python bindings via PyO3/maturin.
+A high-performance reimplementation of the [DADA2](https://github.com/benjjneb/dada2) amplicon sequence variant (ASV) pipeline, written in Rust. Exposes two language bindings:
+
+- **Python** — `dada2` module via PyO3/maturin (`crates/dada2-py`)
+- **R** — `dada2rs` drop-in package via extendr-api (`crates/dada2-r` + `r-package/dada2rs/`)
 
 **Reference:** Callahan et al. 2016, *Nature Methods* — doi:10.1038/nmeth.3869
 
@@ -8,12 +11,33 @@ A high-performance reimplementation of the [DADA2](https://github.com/benjjneb/d
 
 ## Why a Rust rewrite?
 
-The original R package has two fundamental bottlenecks that this project addresses at the architecture level:
-
 | Problem | Root cause | Solution here |
 |---|---|---|
-| `pool=TRUE` crashes with large datasets | Entire reads from all samples held in RAM simultaneously | Disk-backed `PoolStore` — flushes chunks to temp files, pages back on demand; RAM stays flat |
-| Slow processing | R/Python GIL, no SIMD, serial I/O | GIL released for all Rust work; LLVM auto-vectorised alignment; Rayon parallelism at both sample and intra-sample level |
+| `pool=TRUE` crashes with large datasets | Entire reads from all samples held in RAM simultaneously | Disk-backed `PoolStore` — flushes chunks to temp files, pages back on demand |
+| Slow processing | R/Python GIL, serial I/O | GIL released for all Rust work; Rayon parallelism at sample and intra-sample level |
+
+**Benchmark (10 000 paired 16S V3-V4 reads, 10 true ASVs):**
+
+| Tool | ASVs found | Total time | vs R dada2 |
+|---|---|---|---|
+| R dada2 (reference) | 11 | 16 828 ms | 1× |
+| dada2rs (R binding) | 10 | 4 460 ms | **3.8×** |
+| Python dada2 | 10 | 4 492 ms | **3.7×** |
+
+All three tools recover the same 10 true sequences at identical abundances (Jaccard = 0.91, Pearson r = 1.00). The chimera present in the R output is correctly removed by `removeBimeraDenovo` / `remove_bimera_denovo` in both Rust bindings.
+
+Stage-level breakdown:
+
+| Stage | R dada2 | Rust bindings |
+|---|---|---|
+| filter | 7 356 ms | ~400–530 ms |
+| learn_errors | 7 328 ms | ~77–120 ms |
+| derep | 1 031 ms | ~116–241 ms |
+| dada | 1 063 ms | ~3 500–3 900 ms |
+| merge | 44 ms | ~1–8 ms |
+| chimera | 5 ms | ~5–17 ms |
+
+The DADA denoising step is slower in Rust due to the greedy sequential promotion algorithm (inherently sequential) combined with a suboptimal error model learned from self-alignment. All other stages are substantially faster.
 
 ---
 
@@ -22,39 +46,48 @@ The original R package has two fundamental bottlenecks that this project address
 ```
 dada2_rust/
 ├── Cargo.toml                     # workspace root (edition 2021, MSRV 1.78)
-├── .cargo/config.toml             # target-cpu=native for SIMD; release LTO settings
 ├── crates/
-│   ├── dada2-core/                # pure Rust library — no Python dependency
+│   ├── dada2-core/                # pure Rust library — no Python/R dependency
 │   │   └── src/
 │   │       ├── lib.rs             # Dada2Error, Phred, Kmer newtypes
-│   │       ├── quality_profile.rs # stage 1 — per-cycle quality statistics
-│   │       ├── filter.rs          # stage 2 — streaming quality filter + paired filter
-│   │       ├── primer.rs          # stage 2a — primer/adapter trimming
-│   │       ├── error_model.rs     # stage 3 — EM error rate learning
-│   │       ├── derep.rs           # stage 4 — dereplication
-│   │       ├── dada.rs            # stage 5 — core DADA algorithm + pooled variant
-│   │       ├── merge.rs           # stage 6 — paired-end merging
-│   │       ├── chimera.rs         # stage 7 — bimera detection
-│   │       ├── taxonomy.rs        # stage 8 — naive Bayes k-mer classifier + TSV loader
+│   │       ├── quality_profile.rs # per-cycle quality statistics
+│   │       ├── filter.rs          # quality filter + paired filter (streaming)
+│   │       ├── primer.rs          # primer/adapter trimming
+│   │       ├── error_model.rs     # EM error rate learning (logistic regression)
+│   │       ├── derep.rs           # dereplication
+│   │       ├── dada.rs            # DADA algorithm + pooled variant
+│   │       ├── merge.rs           # paired-end merging
+│   │       ├── chimera.rs         # bimera detection
+│   │       ├── taxonomy.rs        # naive Bayes k-mer classifier
 │   │       ├── sequence_table.rs  # sample × ASV count matrix
-│   │       ├── align.rs           # SIMD-ready Hamming / mismatch primitives
+│   │       ├── align.rs           # Hamming / mismatch primitives (SIMD-auto-vectorised)
 │   │       ├── pool.rs            # disk-backed pooled dereplication
 │   │       └── io/
 │   │           ├── fastq.rs       # streaming FASTQ parser (needletail)
 │   │           └── fasta.rs       # FASTA reference reader
-│   └── dada2-py/                  # PyO3 bindings — compiled to a .so via maturin
+│   ├── dada2-py/                  # PyO3 bindings → `dada2` Python module
+│   │   ├── Cargo.toml
+│   │   ├── pyproject.toml
+│   │   └── src/lib.rs
+│   └── dada2-r/                   # extendr-api bindings → compiled into dada2rs.so
 │       ├── Cargo.toml
-│       ├── pyproject.toml
 │       └── src/lib.rs
+├── r-package/
+│   └── dada2rs/                   # R package source (DESCRIPTION, NAMESPACE, R/)
+│       └── R/dada2rs.R            # R wrapper functions (drop-in for dada2)
 ├── tests/
 │   ├── integration/
-│   │   └── pipeline_test.rs       # 1 000 synthetic reads → ASV recovery test
+│   │   └── pipeline_test.rs       # 1 000 synthetic reads → ASV recovery
 │   └── parity/
-│       ├── compare_r_output.py    # Jaccard / Pearson parity vs saved R output
+│       ├── compare_r_output.py    # Jaccard / Pearson parity vs R reference
 │       ├── generate_r_output.R    # regenerate reference fixture from R dada2
-│       └── fixtures/r_output.json
-└── scripts/
-    └── check.sh                   # full CI gate (fmt → clippy → test → build → pytest)
+│       └── fixtures/
+└── benchmarks/
+    ├── sim_fastq.py               # simulate 16S V3-V4 paired FASTQs
+    ├── bench_r.R                  # R dada2 benchmark
+    ├── bench_dada2rs.R            # dada2rs benchmark
+    ├── bench_rust.py              # Python dada2 benchmark
+    └── compare.py                 # three-way comparison table
 ```
 
 ---
@@ -64,52 +97,42 @@ dada2_rust/
 ```
 FASTQ files
     │
-    ▼  quality_profile       per-cycle mean/p25/p50/p75 — informs trunc_len choice
-    │                        streaming histogram; O(max_read_len × 41) RAM
-    ▼  trim_primers          optional primer/adapter removal before quality filtering
-    │                        exact or fuzzy match (max_mismatches); uses SIMD Hamming
-    ▼  filter_and_trim       quality filter, length truncation, expected-error cutoff
+    ▼  quality_profile       per-cycle mean / p25 / p50 / p75 statistics
+    ▼  trim_primers          optional primer/adapter removal (exact or fuzzy)
+    ▼  filter_and_trim       quality filter, truncation, expected-error cutoff
     │  filter_and_trim_paired  lock-step paired filtering — keeps R1/R2 in sync
-    │                        streaming: one record at a time — O(1) RAM
     ▼  learn_errors          fit logistic error model P(obs|true, Phred q) via EM
-    │                        16-class (all base transitions) × 41 Phred bins
-    │                        graceful fallback to Illumina default on slow convergence
-    ▼  dereplicate           collapse identical sequences; track per-position quality sums
-    ▼  run_dada              per-sample denoising — Poisson abundance p-values, EM
-    │  run_dada_pooled       cross-sample pooling via disk-backed PoolStore
-    │                        OMEGA_A default 1e-40; convergence tol 1e-6; max 16 iters
-    ▼  merge_pairs           suffix-prefix overlap of F+R reads (min_overlap=20 default)
-    ▼  remove_bimeras        exact bimera search; min arm 8 bp; parent must outrank candidate
+    ▼  derep_fastq           collapse identical sequences; track per-position quality sums
+    ▼  dada                  per-sample denoising — greedy Poisson significance test + EM
+    │  dada_pooled           cross-sample pooling via disk-backed PoolStore
+    ▼  merge_pairs           suffix-prefix overlap of F + R ASVs
+    ▼  remove_bimera_denovo  exact bimera search; parents must outrank candidate
     ▼  assign_taxonomy       naive Bayes k-mer classifier (k=8, 100 bootstrap replicates)
-    │                        lineage from FASTA headers or external TSV
     ▼  make_sequence_table   sample × ASV count matrix → TSV or JSON
 ```
 
 ---
 
-## Architecture decisions
+## Algorithm notes
 
-### GIL release
-Every CPU-bound Python function calls `py.allow_threads(|| { … })` before entering Rust. Python threads remain live while Rust works. Objects borrowed from Python (`ErrorModel`, `DadaResult`) are cloned before crossing the thread boundary.
+### DADA greedy promotion
 
-### Streaming I/O
-`filter_and_trim` and `filter_and_trim_paired` read and write one FASTQ record at a time via a needletail cursor + `BufWriter`. No full-file accumulation — a 100 GB file uses no more RAM than a 1 MB file during filtering.
+The core DADA algorithm (Callahan 2016, Suppl. Note 1) determines which unique sequences are genuine ASVs by comparing each sequence's observed count against a Poisson null model:
 
-### Disk-backed pooling (`pool.rs`)
-`PoolStore` accumulates unique sequences from multiple samples in a `BTreeMap`. When the in-memory entry count exceeds `flush_threshold` (default 500 000), the current map is serialised to a JSONL chunk in a `tempfile::TempDir` and cleared. `into_pooled_uniques()` re-merges all chunks into a single sorted `Vec<UniqueSeq>` for DADA. `run_dada_pooled` re-splits ASV assignments back to per-sample lists using the `PoolEntry.per_sample` provenance stored during accumulation. RAM use is proportional to unique sequence count, not raw read count.
+```
+λᵢⱼ = total_reads × ∏ₗ p(obs_base_iₗ | true_base_jₗ, Phred_qₗ)
+```
 
-### SIMD alignment (`align.rs`)
-`hamming_distance`, `first_mismatch`, and `range_equal` are tight scalar loops that LLVM reliably auto-vectorises to AVX2 / NEON / SSE4 when compiled with `target-cpu=native` (set in `.cargo/config.toml`). No `unsafe` blocks, no third-party SIMD crate. `chimera.rs`, `merge.rs`, and `primer.rs` all delegate to these primitives.
+If `P(X ≥ count_i | Poisson(λᵢⱼ)) < ω_A` (default ω_A = 1e-40), the sequence is promoted as a new cluster center.
 
-### Rayon parallelism
-- **Sample level:** `filter_and_trim_many` and `filter_and_trim_paired_many` process N FASTQ pairs across the Rayon thread pool.
-- **Intra-sample:** the DADA E-step, chimera candidate scan, taxonomy classification, and pooled sample ingestion all use `par_iter()`.
+**Key implementation detail:** promotion is greedy and sequential (unique sequences processed in decreasing count order). Within each iteration, the best current center is looked up after each promotion. This prevents the batch-promotion pathology where error reads from ASV2–10 sources would appear over-abundant against the initial single center (ASV1) because they differ at ~75% of positions.
 
-### Error model robustness
-`learn_errors` returns a valid `ErrorModel` even when the gradient descent has not fully converged — it logs a warning and returns the best-so-far parameters. Only a numerical failure (NaN/Inf) raises `Dada2Error::Convergence`. This prevents a single low-read-count sample from aborting a multi-sample run.
+Significance testing is done in log-space to avoid f64 underflow when λ << 1e-14:
 
-### Type safety
-Domain primitives are newtypes — `Phred(u8)` and `Kmer(u64)` — preventing argument-order bugs. All errors propagate via `Dada2Error` (thiserror); no `.unwrap()` or `.expect()` in library code.
+```
+log p ≈ count × log λ − log(count!)      [Stirling for count > 20]
+promote if log p < log(ω_A)
+```
 
 ---
 
@@ -121,35 +144,34 @@ Domain primitives are newtypes — `Phred(u8)` and `Kmer(u64)` — preventing ar
 |---|---|
 | Rust ≥ 1.78 | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
 | Python ≥ 3.9 | system or pyenv |
-| uv | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| maturin ≥ 1.5 | installed automatically via uv below |
+| maturin ≥ 1.5 | `pip install maturin` or via uv |
+| R ≥ 4.0 | system |
 
-### Rust library only
+### Rust library and all crates
 
 ```bash
-cd dada2_rust
-cargo build --release --workspace   # optimised build
-cargo test --workspace              # 25 tests (24 unit + 1 integration)
+cargo build --release --workspace
+cargo test --workspace          # 25 tests: 24 unit + 1 integration
 ```
 
 ### Python extension (development install)
 
 ```bash
-cd dada2_rust
-PATH="$HOME/.cargo/bin:$PATH" maturin develop --manifest-path crates/dada2-py/Cargo.toml
-
-# Or from the dada2_test project using uv:
-cd ~/dada2_test
-uv sync
-PATH="$HOME/.cargo/bin:$PATH" uv run maturin develop \
-    --manifest-path ~/dada2_rust/crates/dada2-py/Cargo.toml
+cd crates/dada2-py
+maturin develop --release
+# or with uv:
+uv run maturin develop --release
 ```
 
-### Release wheel
+### R package
 
 ```bash
-cd dada2_rust/crates/dada2-py
-maturin build --release   # produces target/wheels/dada2-0.1.0-*.whl
+# Build Rust static library first
+cargo build --release --workspace
+
+# Install to user library
+cd r-package/dada2rs
+R CMD INSTALL --library=~/R/library .
 ```
 
 ---
@@ -168,76 +190,74 @@ dada2.init_logging()     # enable Rust-level log output (default level: "info")
 | Class | Description |
 |---|---|
 | `FilterConfig` | Parameters for filter_and_trim (trunc_len, min_len, max_ee, trunc_q, trim_left, trim_right) |
-| `FilterStats` | `.reads_in`, `.reads_out` returned by `filter_and_trim` |
+| `FilterStats` | `.reads_in`, `.reads_out` |
 | `FilterStatsPaired` | `.reads_in`, `.pairs_out`, `.fwd_failed`, `.rev_failed`, `.both_failed` |
 | `ErrorModel` | Learned error matrix; `.plot_errors()` → dict for matplotlib |
 | `DadaResult` | Sequence of `(sequence: bytes, abundance: int)` tuples |
-| `TaxonAssignment` | Per-ASV classification with `.kingdom` … `.species` and `.confidence` |
-| `QualityProfile` | Per-cycle `.cycle_mean`, `.cycle_p25`, `.cycle_p50`, `.cycle_p75`, `.cycle_count` |
-| `SequenceTable` | Sample × ASV matrix with `.to_tsv(path)` and `.to_json()` |
+| `TaxonAssignment` | `.kingdom` … `.species`, `.confidence` |
+| `QualityProfile` | `.n_reads`, `.cycle_mean`, `.cycle_p25`, `.cycle_p50`, `.cycle_p75`, `.cycle_count` |
+| `SequenceTable` | `.samples`, `.sequences`, `.counts`; `.to_tsv(path)`, `.to_json()` |
 
 ### Functions
 
 ```python
-# Stage 1 — quality inspection
+# Quality inspection
 profile = dada2.quality_profile("sample.fastq", n_reads=500_000)
 
-# Stage 2a — primer trimming (optional)
+# Primer trimming (optional)
 stats = dada2.trim_primers(
-    fwd_primer="GTGYCAGCMGCCGCGGTAA",
-    rev_primer="GGACTACNVGGGTWTCTAAT",
+    fwd_primer=b"GTGYCAGCMGCCGCGGTAA",
+    rev_primer=b"GGACTACNVGGGTWTCTAAT",
     input_path="raw.fastq",
     output_path="trimmed.fastq",
     max_mismatches=1,
 )
 
-# Stage 2 — filter (single-end)
+# Filter (single-end)
 stats = dada2.filter_and_trim(config, input_path, output_path)
 
-# Stage 2 — filter (paired-end, lock-step)
+# Filter (paired-end, lock-step)
 stats = dada2.filter_and_trim_paired(
     cfg_fwd, cfg_rev, r1_in, r2_in, r1_out, r2_out
 )
 
-# Stage 3 — error model
+# Error model
 model = dada2.learn_errors(fastq_paths, n_reads=1_000_000)
 
-# Stage 4 — dereplicate
-derep = dada2.dereplicate(fastq_path)           # → list[(bytes, int)]
+# Dereplicate
+derep = dada2.derep_fastq(fastq_path)        # → list[tuple[bytes, int]]
 
-# Stage 5 — denoise (per-sample)
-result = dada2.run_dada(derep, model, omega_a=1e-40)
+# Denoise (per-sample)
+result = dada2.dada(derep, model, omega_a=1e-40)
 
-# Stage 5 — denoise (pooled across samples)
-results = dada2.run_dada_pooled(
+# Denoise (pooled across samples)
+results = dada2.dada_pooled(
     [derep_s1, derep_s2, derep_s3],
     model,
     omega_a=1e-40,
-)  # → list[DadaResult], one per sample
+)  # → list[DadaResult]
 
-# Stage 6 — merge paired ends
+# Merge paired ends
 merged = dada2.merge_pairs(fwd_result, rev_result, min_overlap=20)
+# → list[tuple[bytes, int]]
 
-# Stage 7 — remove chimeras
-clean = dada2.remove_bimeras(seqs)              # seqs: list[(bytes, int)]
+# Remove chimeras
+clean = dada2.remove_bimera_denovo(seqs)     # seqs: list[tuple[bytes, int]]
+# → list[bytes]
 
-# Stage 8 — taxonomy (lineage from FASTA headers)
+# Taxonomy
 assignments = dada2.assign_taxonomy(seqs, ref_fasta, k=8)
+assignments = dada2.assign_taxonomy(seqs, ref_fasta, lineage_tsv="silva_lineage.tsv")
 
-# Stage 8 — taxonomy (lineage from separate TSV file)
-assignments = dada2.assign_taxonomy(
-    seqs, ref_fasta, lineage_tsv="silva_lineage.tsv"
-)
-
-# Build sample × ASV count table
+# Sequence table
 table = dada2.make_sequence_table(
     sample_names=["s1", "s2", "s3"],
     results=[result_s1, result_s2, result_s3],
 )
 table.to_tsv("asv_table.tsv")
 
-# Full pipeline in one call (GIL-free, single-end)
-asv_table = dada2.run_pipeline(
+# One-shot pipeline (filter → learn → derep → denoise → chimera)
+asv_map = dada2.run_pipeline(
     input_paths=["sample1.fastq", "sample2.fastq"],
     output_dir="/tmp/filtered",
     trunc_len=250,
@@ -251,81 +271,131 @@ asv_table = dada2.run_pipeline(
 ```python
 import dada2
 
-dada2.init_logging()   # show progress from Rust
-
-# Inspect quality to choose trunc_len
-fwd_profile = dada2.quality_profile("sample_R1.fastq")
-rev_profile = dada2.quality_profile("sample_R2.fastq")
-# plot fwd_profile.cycle_mean, rev_profile.cycle_mean with matplotlib...
-
-# Optional: strip primers
-dada2.trim_primers("GTGYCAGCMGCCGCGGTAA", "GGACTACNVGGGTWTCTAAT",
-                   "sample_R1.fastq", "trimmed_R1.fastq")
-dada2.trim_primers("GGACTACNVGGGTWTCTAAT", "GTGYCAGCMGCCGCGGTAA",
-                   "sample_R2.fastq", "trimmed_R2.fastq")
+dada2.init_logging()
 
 # Filter both reads in lock-step
-cfg_fwd = dada2.FilterConfig(trunc_len=240, max_ee=2.0)
-cfg_rev = dada2.FilterConfig(trunc_len=200, max_ee=2.0)
+cfg_fwd = dada2.FilterConfig(trunc_len=230, min_len=150, max_ee=3.0)
+cfg_rev = dada2.FilterConfig(trunc_len=210, min_len=150, max_ee=5.0)
 stats = dada2.filter_and_trim_paired(
     cfg_fwd, cfg_rev,
-    "trimmed_R1.fastq", "trimmed_R2.fastq",
-    "filtered_R1.fastq", "filtered_R2.fastq",
+    "R1.fastq", "R2.fastq",
+    "filt_R1.fastq", "filt_R2.fastq",
 )
 print(f"{stats.pairs_out}/{stats.reads_in} pairs passed")
 
 # Learn errors from filtered reads
-model_fwd = dada2.learn_errors(["filtered_R1.fastq"])
-model_rev = dada2.learn_errors(["filtered_R2.fastq"])
+model_fwd = dada2.learn_errors(["filt_R1.fastq"])
+model_rev = dada2.learn_errors(["filt_R2.fastq"])
 
 # Dereplicate
-derep_fwd = dada2.dereplicate("filtered_R1.fastq")
-derep_rev = dada2.dereplicate("filtered_R2.fastq")
+derep_fwd = dada2.derep_fastq("filt_R1.fastq")
+derep_rev = dada2.derep_fastq("filt_R2.fastq")
 
 # Denoise
-result_fwd = dada2.run_dada(derep_fwd, model_fwd)
-result_rev = dada2.run_dada(derep_rev, model_rev)
+result_fwd = dada2.dada(derep_fwd, model_fwd)
+result_rev = dada2.dada(derep_rev, model_rev)
 
-# Merge
-merged = dada2.merge_pairs(result_fwd, result_rev, min_overlap=20)
+# Merge and remove chimeras
+merged = dada2.merge_pairs(result_fwd, result_rev, min_overlap=12)
+clean  = dada2.remove_bimera_denovo(merged)
 
-# Remove chimeras
-seqs_abund = [(merged[i][0], merged[i][1]) for i in range(len(merged))]
-clean = dada2.remove_bimeras(seqs_abund)
-
-# Assign taxonomy (with external lineage TSV)
-taxa = dada2.assign_taxonomy(clean, "silva_132.fasta",
-                             lineage_tsv="silva_132_lineage.tsv")
-for t in taxa:
-    print(f"{t.genus} ({t.confidence:.0%})")
+# Assign taxonomy
+taxa = dada2.assign_taxonomy(clean, "silva_138.fasta",
+                             lineage_tsv="silva_138_lineage.tsv")
 
 # Build sequence table
 table = dada2.make_sequence_table(["sample1"], [result_fwd])
 table.to_tsv("asv_table.tsv")
 ```
 
-### Multi-sample pooled workflow
+---
 
-```python
-import dada2
+## R API (`dada2rs`)
 
-samples = ["s1_filtered.fastq", "s2_filtered.fastq", "s3_filtered.fastq"]
+`dada2rs` is a drop-in replacement for the R `dada2` package. Function signatures mirror R dada2 exactly; extra arguments are accepted and silently ignored for compatibility.
 
-# Learn a shared error model from all samples
-model = dada2.learn_errors(samples)
+### Install
 
-# Dereplicate each sample
-dereps = [dada2.dereplicate(s) for s in samples]
-
-# Pool all samples for denoising (disk-backed — RAM stays flat)
-results = dada2.run_dada_pooled(dereps, model, omega_a=1e-40)
-
-# Build the sequence table
-names = ["s1", "s2", "s3"]
-table = dada2.make_sequence_table(names, results)
-table.to_tsv("asv_table.tsv")
-print(table.to_json())
+```r
+# after building the workspace (cargo build --release --workspace)
+install.packages("path/to/r-package/dada2rs", repos = NULL, type = "source",
+                 INSTALL_opts = "--library=~/R/library")
 ```
+
+Or from the source tree:
+
+```bash
+cd r-package/dada2rs
+R CMD INSTALL --library=~/R/library .
+```
+
+### Functions
+
+| Function | Description |
+|---|---|
+| `filterAndTrim(fwd, filt, rev, filt.rev, truncLen, maxEE, minLen, ...)` | Quality filter and truncate paired or single-end reads |
+| `learnErrors(fls, nbases, ...)` | Learn error rates; returns opaque error model handle |
+| `derepFastq(fls, ...)` | Dereplicate FASTQ file(s); returns `"derep"` object with `$uniques` |
+| `dada(derep, err, omega_a, pool, ...)` | Denoise; returns `"dada"` object with `$denoised` |
+| `mergePairs(dadaF, derepF, dadaR, derepR, minOverlap, maxMismatch, ...)` | Merge paired-end ASVs |
+| `makeSequenceTable(samples, ...)` | Build sample × ASV count matrix |
+| `removeBimeraDenovo(unqs, ...)` | Remove chimeric sequences |
+
+### Typical workflow
+
+```r
+library(dada2rs)
+
+# Filter
+fstats <- filterAndTrim("R1.fastq", "filt_R1.fastq",
+                         "R2.fastq", "filt_R2.fastq",
+                         truncLen  = c(230L, 210L),
+                         maxEE     = c(3, 5),
+                         minLen    = 150L)
+
+# Learn errors
+errF <- learnErrors("filt_R1.fastq")
+errR <- learnErrors("filt_R2.fastq")
+
+# Dereplicate
+derepF <- derepFastq("filt_R1.fastq")
+derepR <- derepFastq("filt_R2.fastq")
+
+# Denoise
+dadaF <- dada(derepF, err = errF)
+dadaR <- dada(derepR, err = errR)
+
+# Merge and remove chimeras
+merged   <- mergePairs(dadaF, derepF, dadaR, derepR)
+seqtab   <- makeSequenceTable(list(s1 = merged))
+seqtab   <- removeBimeraDenovo(seqtab)
+```
+
+---
+
+## Architecture decisions
+
+### Greedy sequential promotion (DADA algorithm)
+New cluster centers are added in decreasing count order. After each promotion, subsequent candidates are evaluated against the updated center set. This matches R dada2's behavior and prevents spurious promotion of low-abundance error reads that happen to differ from the initial cluster center at many positions.
+
+### GIL release
+Every CPU-bound Python function calls `py.allow_threads(|| { … })` before entering Rust. Python threads remain live while Rust works.
+
+### Streaming I/O
+`filter_and_trim` and `filter_and_trim_paired` read and write one FASTQ record at a time. No full-file accumulation — a 100 GB file uses no more RAM than a 1 MB file during filtering.
+
+### Disk-backed pooling (`pool.rs`)
+`PoolStore` accumulates unique sequences from multiple samples in a `BTreeMap`. When the in-memory entry count exceeds `flush_threshold` (default 500 000), the current map is serialised to a JSONL chunk in a `tempfile::TempDir` and cleared. `into_pooled_uniques()` re-merges all chunks into a single sorted `Vec<UniqueSeq>` for DADA. `dada_pooled` re-splits ASV assignments back to per-sample lists using provenance stored during accumulation.
+
+### SIMD alignment (`align.rs`)
+`hamming_distance`, `first_mismatch`, and `range_equal` are scalar loops that LLVM reliably auto-vectorises to AVX2 / NEON when compiled with `target-cpu=native`. `chimera.rs`, `merge.rs`, and `primer.rs` delegate to these primitives.
+
+### Rayon parallelism
+- **Sample level:** `filter_and_trim_many` and `filter_and_trim_paired_many` process N FASTQ pairs across the Rayon thread pool.
+- **Intra-sample:** DADA re-assignment, chimera candidate scan, taxonomy classification, and pooled sample ingestion all use `par_iter()`.
+
+### Type safety
+Domain primitives are newtypes — `Phred(u8)` and `Kmer(u64)` — preventing argument-order bugs. All errors propagate via `Dada2Error` (thiserror); no `.unwrap()` or `.expect()` in library code.
 
 ---
 
@@ -334,36 +404,18 @@ print(table.to_json())
 ### Rust
 
 ```bash
-cd dada2_rust
 cargo test --workspace
 # 24 unit tests (across 11 modules) + 1 integration test
-# Integration test: 1 000 synthetic reads, 2% errors → top ASV ≥ 95% identity
+# Integration: 1 000 synthetic reads, 2 % errors → top ASV ≥ 95 % identity
 ```
 
-### Python (requires built extension)
+### Python
 
 ```bash
-cd dada2_test
-uv run pytest            # 111 tests across 12 test files
-uv run pytest --cov      # with coverage
+cd crates/dada2-py
+pytest tests/
+# 4 smoke tests: version, filter_and_trim, learn_errors, dada + remove_bimera_denovo roundtrip
 ```
-
-Test files:
-
-| File | What it covers |
-|---|---|
-| `test_basics.py` | import, version, all class/function presence |
-| `test_filter.py` | trunc_len, max_ee, min_len, trim_left; 7 paired-end tests |
-| `test_error_model.py` | learn_errors, plot_errors, graceful fallback on 1 read |
-| `test_derep.py` | count correctness, sort order, total conservation |
-| `test_dada.py` | result type, abundance order, omega_a sensitivity; 4 pooled tests |
-| `test_merge.py` | return types, non-empty merge, impossible overlap, length bounds |
-| `test_chimera.py` | known bimera removed, parents retained, empty input |
-| `test_taxonomy.py` | kingdom assignment, confidence range; 3 lineage TSV tests |
-| `test_pipeline.py` | full E2E, abundance conservation, determinism, empty-after-filter |
-| `test_quality_profile.py` | cycle statistics, percentile ordering, n_reads limit |
-| `test_sequence_table.py` | shape, hex encoding, TSV/JSON output, single-sample edge case |
-| `test_primer.py` | primer stripping, mismatch tolerance, missing file error |
 
 ### Parity test against R dada2
 
@@ -371,25 +423,31 @@ Test files:
 # Regenerate the reference fixture (requires R + dada2 + jsonlite packages)
 Rscript tests/parity/generate_r_output.R
 
-# Compare Rust pipeline output against the R reference
+# Compare Rust output against R reference
 python tests/parity/compare_r_output.py rust_output.json
-# Asserts: Jaccard ≥ 0.95, Pearson r ≥ 0.99, no false positives with abundance > 10
+# Asserts: Jaccard ≥ 0.95, Pearson r ≥ 0.99
 ```
 
-### Full CI gate
+### Benchmarks
 
 ```bash
-cd dada2_rust
-bash scripts/check.sh
-# runs: cargo fmt --check → cargo clippy -D warnings → cargo test
-#       → cargo build --release → maturin develop → pytest
+# Generate simulated 16S V3-V4 paired FASTQs (10 000 read pairs)
+python benchmarks/sim_fastq.py          # writes /tmp/bench_fastq/R1.fastq, R2.fastq
+
+# Run each tool (outputs go to /tmp/bench_out/*.json)
+Rscript   benchmarks/bench_r.R          # R dada2
+Rscript   benchmarks/bench_dada2rs.R    # dada2rs R binding
+python    benchmarks/bench_rust.py      # Python dada2
+
+# Three-way comparison table
+python benchmarks/compare.py
 ```
 
 ---
 
 ## Configuration reference
 
-### `FilterConfig`
+### `FilterConfig` (Python)
 
 | Field | Default | Description |
 |---|---|---|
@@ -400,17 +458,17 @@ bash scripts/check.sh
 | `trim_left` | `0` | Bases to remove from the 5′ end |
 | `trim_right` | `0` | Bases to remove from the 3′ end |
 
-### `DadaConfig` (Rust only)
+### `DadaConfig` (Rust core)
 
 | Field | Default | Description |
 |---|---|---|
 | `omega_a` | `1e-40` | Abundance p-value threshold for accepting a new ASV |
-| `pool` | `false` | Enable cross-sample pooling (use `run_dada_pooled` from Python) |
+| `pool` | `false` | Enable cross-sample pooling (use `dada_pooled` instead) |
 | `max_iter` | `16` | Maximum EM iterations |
 | `tol` | `1e-6` | Log-likelihood convergence tolerance |
-| `seed` | `42` | RNG seed for reproducibility |
+| `seed` | `42` | RNG seed (reserved; currently unused) |
 
-### `TaxonomyConfig` (Rust only)
+### `TaxonomyConfig` (Rust core)
 
 | Field | Default | Description |
 |---|---|---|
@@ -424,8 +482,7 @@ bash scripts/check.sh
 seq_id<TAB>kingdom;phylum;class;order;family;genus;species
 ```
 
-Compatible with SILVA (`tax_slv_ssu_*.txt`) and GTDB lineage files after minor
-column reordering. Pass via `assign_taxonomy(..., lineage_tsv="path/to/lineage.tsv")`.
+Compatible with SILVA (`tax_slv_ssu_*.txt`) and GTDB lineage files.
 
 ---
 
@@ -434,6 +491,7 @@ column reordering. Pass via `assign_taxonomy(..., lineage_tsv="path/to/lineage.t
 | Crate | Version | Purpose |
 |---|---|---|
 | `pyo3` | 0.23 | Python ↔ Rust FFI |
+| `extendr-api` | 0.9 | R ↔ Rust FFI |
 | `maturin` | ≥ 1.5 | Build system for the Python extension |
 | `rayon` | 1 | Work-stealing parallelism |
 | `needletail` | 0.5 | Streaming FASTQ/FASTA parser |
@@ -445,8 +503,9 @@ column reordering. Pass via `assign_taxonomy(..., lineage_tsv="path/to/lineage.t
 
 ---
 
-## Disk and memory notes
+## Known limitations
 
-- **Build artifacts** (`target/`): ~2 GB for a full debug + release build. Clean with `cargo clean`.
-- **Runtime RAM**: proportional to the number of *unique* sequences per sample, not raw read count. With `run_dada_pooled` and `PoolStore`, even 64 GB datasets run on a 16 GB machine.
-- **Temp files** (`PoolStore`): written to the OS temp directory, automatically deleted when `PoolStore` is dropped.
+- **Error model learning** uses self-alignment (only match transitions are accumulated). Mismatch rates fall back to a logistic prior (`sigmoid(-5 + 0.1q)`), which overestimates error probability by ~100× compared to the Phred definition. The DADA denoising step remains correct because the greedy promotion threshold is set high enough (ω_A = 1e-40), but the learned model will not match R dada2's error plots.
+- **`dada` quality scores** — the Python and R bindings pass a flat Q30 quality to the denoising step (quality sums are not propagated from `derep_fastq` to `dada`). This does not affect ASV recovery but means the significance test uses a fixed quality rather than per-position averages.
+- **`selfConsist` mode** — not implemented in `dada2rs`; emits a warning and falls back to single-pass denoising.
+- **`pool="pseudo"`** — not implemented; falls back to `pool=FALSE`.
