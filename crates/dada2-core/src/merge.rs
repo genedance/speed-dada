@@ -60,15 +60,19 @@ pub fn merge_pairs(
 
     let mut merged: Vec<MergedRead> = Vec::new();
 
+    // Precompute all reverse complements — each is independent of the forward read.
+    let rev_rcs: Vec<Vec<u8>> = rev_asvs.iter()
+        .map(|rev| reverse_complement(&rev.sequence))
+        .collect();
+
     for fwd in fwd_asvs {
-        for rev in rev_asvs {
-            let rev_rc = reverse_complement(&rev.sequence);
+        for (rev, rev_rc) in rev_asvs.iter().zip(rev_rcs.iter()) {
             if let Some((overlap_len, n_mismatches)) =
-                find_overlap(&fwd.sequence, &rev_rc, cfg.min_overlap, cfg.max_mismatches)
+                find_overlap(&fwd.sequence, rev_rc, cfg.min_overlap, cfg.max_mismatches)
             {
                 let sequence = if cfg.just_concatenate {
                     let mut s = fwd.sequence.clone();
-                    s.extend_from_slice(&rev_rc);
+                    s.extend_from_slice(rev_rc);
                     s
                 } else {
                     let mut s = fwd.sequence.clone();

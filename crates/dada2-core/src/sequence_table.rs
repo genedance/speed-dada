@@ -54,16 +54,7 @@ impl SequenceTable {
             counts.push(vec![0u32; n_asvs]);
         }
 
-        let hex_seqs: Vec<String> = sequences
-            .iter()
-            .map(|s| {
-                use std::fmt::Write as _;
-                s.iter().fold(String::with_capacity(s.len() * 2), |mut acc, b| {
-                    let _ = write!(acc, "{b:02x}");
-                    acc
-                })
-            })
-            .collect();
+        let hex_seqs: Vec<String> = sequences.iter().map(|s| crate::bytes_to_hex(s)).collect();
 
         Self {
             samples: sample_names.iter().map(|s| (*s).to_owned()).collect(),

@@ -134,7 +134,8 @@ impl TaxonomyDb {
         }
 
         let query_kmers: Vec<Kmer> = kmers(seq, self.k).collect();
-        let best_label = self.best_match(&query_kmers);
+        let best_label: &str = self.best_match(&query_kmers);
+        let best_genus = self.genus_of(best_label);
 
         // Bootstrap confidence
         let mut seed = cfg.seed;
@@ -151,23 +152,18 @@ impl TaxonomyDb {
                     query_kmers[idx]
                 })
                 .collect();
-            let boot_label = self.best_match(&subsample);
-            if let (Some(bl), Some(best)) = (
-                self.genus_of(&boot_label),
-                self.genus_of(&best_label),
-            ) {
-                if bl == best {
-                    genus_hits += 1;
-                }
+            let boot_label: &str = self.best_match(&subsample);
+            if self.genus_of(boot_label) == best_genus && best_genus.is_some() {
+                genus_hits += 1;
             }
         }
 
         #[allow(clippy::cast_precision_loss)]
         let confidence = f64::from(genus_hits) / N_BOOTSTRAP as f64;
-        let lineage = self.lineages.get(&best_label);
+        let lineage = self.lineages.get(best_label);
 
         TaxonAssignment {
-            asv: hex_encode(seq),
+            asv: crate::bytes_to_hex(seq),
             kingdom: get(lineage, 0),
             phylum: get(lineage, 1),
             class: get(lineage, 2),
@@ -179,20 +175,21 @@ impl TaxonomyDb {
         }
     }
 
-    fn best_match(&self, query_kmers: &[Kmer]) -> String {
+    fn best_match<'a>(&'a self, query_kmers: &[Kmer]) -> &'a str {
         self.profiles
             .iter()
-            .map(|(label, counts)| {
+            .enumerate()
+            .map(|(idx, (_, counts))| {
                 #[allow(clippy::cast_possible_truncation)]
                 let score: u64 = query_kmers
                     .iter()
                     .map(|k| u64::from(counts[k.0 as usize]))
                     .sum();
-                (label.clone(), score)
+                (idx, score)
             })
             .max_by_key(|(_, s)| *s)
-            .map(|(l, _)| l)
-            .unwrap_or_default()
+            .map(|(idx, _)| self.profiles[idx].0.as_str())
+            .unwrap_or("")
     }
 
     fn genus_of(&self, label: &str) -> Option<String> {
@@ -272,13 +269,6 @@ fn encode_kmer(slice: &[u8], _k: usize) -> Option<Kmer> {
     Some(Kmer(val))
 }
 
-fn hex_encode(seq: &[u8]) -> String {
-    use std::fmt::Write as _;
-    seq.iter().fold(String::with_capacity(seq.len() * 2), |mut acc, b| {
-        let _ = write!(acc, "{b:02x}");
-        acc
-    })
-}
 
 #[cfg(test)]
 mod tests {

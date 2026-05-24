@@ -71,3 +71,13 @@ impl Phred {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash,
          serde::Serialize, serde::Deserialize)]
 pub struct Kmer(pub u64);
+
+/// Encode a byte slice as a lowercase hexadecimal string.
+#[must_use]
+pub fn bytes_to_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}

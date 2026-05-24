@@ -29,26 +29,30 @@ pub fn remove_bimera_denovo(
     let mut sorted = seqs.to_vec();
     sorted.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-    let result: Vec<(Vec<u8>, u32)> = sorted
+    // Compute keep/reject in parallel; collect as booleans to preserve sorted order
+    // without a second sort pass.
+    let keep: Vec<bool> = sorted
         .par_iter()
         .enumerate()
-        .filter(|(i, (seq, abund))| {
-            if *i == 0 {
+        .map(|(i, (seq, abund))| {
+            if i == 0 {
                 return true; // most abundant is never a chimera
             }
-            let parents: Vec<&[u8]> = sorted[..*i]
+            let parents: Vec<&[u8]> = sorted[..i]
                 .iter()
                 .filter(|(_, pa)| *pa > *abund)
                 .map(|(s, _)| s.as_slice())
                 .collect();
             !is_bimera(seq, &parents)
         })
-        .map(|(_, item)| item.clone())
         .collect();
 
-    // Restore descending-abundance order after parallel filter
-    let mut out = result;
-    out.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    // Consume `sorted` directly — no clone per item, no second sort needed.
+    let out: Vec<(Vec<u8>, u32)> = sorted
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(item, keep)| if keep { Some(item) } else { None })
+        .collect();
     let n_out = out.len();
     log::info!("remove_bimeras: {n_in} sequences → {n_out} after chimera removal");
     Ok(out)

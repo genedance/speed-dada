@@ -2,10 +2,12 @@
 //!
 //! Fits a logistic regression  P(obs | true, q) = σ(a + b·q)  for each of
 //! the 16 base-transition classes.  The resulting [`ErrorModel`] is a
-//! `16 × max_qual` matrix of substitution probabilities.
+//! `16 × max_qual` matrix of substitution probabilities, with a precomputed
+//! log-probability matrix for use in the DADA hot loop.
 
 use crate::{Dada2Error, Phred};
 use ndarray::{Array1, Array2};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 /// Index encoding for the 16 transition classes (`true_base × 4 + obs_base`).
@@ -16,13 +18,33 @@ pub const N_TRANSITIONS: usize = 16;
 pub const MAX_QUAL: usize = 41;
 
 /// Learned error model: a `16 × MAX_QUAL` matrix of P(obs | true, q).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ErrorModel {
     /// `matrix[[trans, q]]` = P(observing obs-base | true-base, Phred q).
     /// Rows 0..16 index transitions (`true*4+obs`); columns 0..`MAX_QUAL` index Phred.
     pub matrix: Array2<f64>,
     /// Number of reads used to fit this model.
     pub n_reads_used: u64,
+    /// Precomputed `log(matrix[[trans, q]].max(1e-300))` for the DADA hot loop.
+    #[serde(skip)]
+    log_matrix: Array2<f64>,
+}
+
+impl<'de> Deserialize<'de> for ErrorModel {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Wire {
+            matrix: Array2<f64>,
+            n_reads_used: u64,
+        }
+        let Wire { matrix, n_reads_used } = Wire::deserialize(d)?;
+        let log_matrix = build_log_matrix(&matrix);
+        Ok(Self { matrix, n_reads_used, log_matrix })
+    }
+}
+
+fn build_log_matrix(matrix: &Array2<f64>) -> Array2<f64> {
+    matrix.mapv(|p| p.max(1e-300).ln())
 }
 
 impl ErrorModel {
@@ -36,6 +58,17 @@ impl ErrorModel {
         self.matrix[[row, col]]
     }
 
+    /// Log-probability of transition `(true_base, obs_base)` at quality `q`.
+    ///
+    /// Equivalent to `p_error(…).max(1e-300).ln()` but uses a precomputed table.
+    #[inline]
+    #[must_use]
+    pub fn log_p_error(&self, true_base: u8, obs_base: u8, q: Phred) -> f64 {
+        let row = (true_base as usize) * 4 + (obs_base as usize);
+        let col = (q.0 as usize).min(MAX_QUAL - 1);
+        self.log_matrix[[row, col]]
+    }
+
     /// Compute the log-likelihood that `obs` was produced from `truth` under this model.
     #[must_use]
     pub fn log_likelihood(&self, truth: &[u8], obs: &[u8], quals: &[u8]) -> f64 {
@@ -47,7 +80,7 @@ impl ErrorModel {
                 let tb = base_index(t);
                 let ob = base_index(o);
                 let q = Phred::from_ascii(qc);
-                self.p_error(tb, ob, q).max(1e-300).ln()
+                self.log_p_error(tb, ob, q)
             })
             .sum()
     }
@@ -64,12 +97,12 @@ impl ErrorModel {
             for col in 0..MAX_QUAL {
                 #[allow(clippy::cast_precision_loss)]
                 let q = col as f64;
-                // P(error) from Phred definition
                 let p_err = 10f64.powf(-q / 10.0);
                 matrix[[row, col]] = if is_match { 1.0 - p_err } else { p_err / 3.0 };
             }
         }
-        Self { matrix, n_reads_used: 0 }
+        let log_matrix = build_log_matrix(&matrix);
+        Self { matrix, n_reads_used: 0, log_matrix }
     }
 }
 
@@ -129,19 +162,32 @@ pub fn learn_errors(
         }
     }
 
-    // Logistic regression fit per transition class
+    // Logistic regression fit per transition class — all 16 rows are independent.
+    let rows: Vec<Array1<f64>> = (0..N_TRANSITIONS)
+        .map(|row| counts.row(row).to_owned())
+        .collect();
+
+    let params: Vec<Result<[f64; 2], Dada2Error>> = rows
+        .par_iter()
+        .enumerate()
+        .map(|(row, row_counts)| {
+            let is_match = row % 5 == 0;
+            fit_logistic_row(row_counts, is_match, cfg)
+        })
+        .collect();
+
     let mut matrix = Array2::<f64>::zeros((N_TRANSITIONS, MAX_QUAL));
-    for row in 0..N_TRANSITIONS {
-        let is_match = row % 5 == 0;
-        let params = fit_logistic_row(&counts.row(row).to_owned(), is_match, cfg)?;
+    for (row, res) in params.into_iter().enumerate() {
+        let [a, b] = res?;
         for col in 0..MAX_QUAL {
             #[allow(clippy::cast_precision_loss)]
             let q = col as f64;
-            matrix[[row, col]] = sigmoid(params[0] + params[1] * q);
+            matrix[[row, col]] = sigmoid(a + b * q);
         }
     }
 
-    Ok(ErrorModel { matrix, n_reads_used: n as u64 })
+    let log_matrix = build_log_matrix(&matrix);
+    Ok(ErrorModel { matrix, n_reads_used: n as u64, log_matrix })
 }
 
 /// Fit a 2-parameter logistic model σ(a + b·q) to a count vector by gradient descent.
@@ -157,7 +203,6 @@ fn fit_logistic_row(
     let lr = 1e-3;
     let total: f64 = counts.sum();
     if total == 0.0 {
-        // No data — use Phred definition as prior
         return Ok([if is_match { 5.0 } else { -5.0 }, if is_match { -0.3 } else { 0.1 }]);
     }
 
@@ -185,7 +230,6 @@ fn fit_logistic_row(
         a += lr * ga;
         b += lr * gb;
 
-        // After the first gradient update, check for numerical failure.
         if first_step {
             first_step = false;
             if !a.is_finite() || !b.is_finite() {
@@ -243,7 +287,6 @@ mod tests {
     #[test]
     fn illumina_default_diagonal_dominates() {
         let m = ErrorModel::illumina_default();
-        // At Phred 30, match probability should be much higher than mismatch
         let p_match = m.p_error(0, 0, Phred(30));
         let p_mismatch = m.p_error(0, 1, Phred(30));
         assert!(p_match > 0.9, "match prob at Q30 should be > 0.9, got {p_match}");
@@ -251,11 +294,28 @@ mod tests {
     }
 
     #[test]
+    fn log_p_error_consistent_with_p_error() {
+        let m = ErrorModel::illumina_default();
+        for tb in 0u8..4 {
+            for ob in 0u8..4 {
+                for q in [0u8, 10, 20, 30, 40] {
+                    let p = m.p_error(tb, ob, Phred(q));
+                    let log_p = m.log_p_error(tb, ob, Phred(q));
+                    let expected = p.max(1e-300).ln();
+                    assert!(
+                        (log_p - expected).abs() < 1e-12,
+                        "log_p_error mismatch at tb={tb} ob={ob} q={q}: {log_p} vs {expected}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn learn_errors_returns_ok() {
         let records: Vec<FastqRecord> = (0..50)
             .map(|_i| make_record("ACGTACGT", &"I".repeat(8)))
             .collect();
-        // Should not panic; may or may not converge
         let _ = learn_errors(&records, &ErrorLearningConfig { max_iter: 100, ..Default::default() });
     }
 }

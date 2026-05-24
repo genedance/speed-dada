@@ -65,9 +65,22 @@ pub fn dada(
 
     let total_reads: u64 = uniques.iter().map(|u| u64::from(u.count)).sum();
 
-    // Initialise: the most-abundant unique seq is the first cluster centre
+    // Precompute per-position log-probability lookup tables for every unique sequence.
+    // logp_table[u][i][tb] = log P(u.seq[i] | true_base=tb, mean_qual_at_i)
+    // This moves all ln() calls out of the per-unique-per-centre inner loop.
+    let logp_table: Vec<Vec<[f64; 4]>> = uniques
+        .par_iter()
+        .map(|u| precompute_logp(u, error_model))
+        .collect();
+
+    // Initialise: most-abundant unique seq is the first cluster centre
     let mut centres: Vec<Vec<u8>> = vec![uniques[0].seq.clone()];
     let mut assignments: Vec<usize> = vec![0usize; uniques.len()];
+
+    // Track which sequences are already centres; maintained incrementally across
+    // all iterations (centres only grow, never shrink).
+    let mut centre_set: std::collections::HashSet<&[u8]> =
+        std::collections::HashSet::from([uniques[0].seq.as_slice()]);
 
     let mut prev_ll = f64::NEG_INFINITY;
 
@@ -78,67 +91,61 @@ pub fn dada(
         // pass — so that once a true ASV is promoted, its close neighbours
         // (error reads) are tested against that ASV and are not spuriously
         // promoted themselves.
-        let mut live_centre_set: std::collections::HashSet<Vec<u8>> =
-            centres.iter().cloned().collect();
-        for u in uniques.iter() {
-            if live_centre_set.contains(&u.seq) {
+        for (u_idx, u) in uniques.iter().enumerate() {
+            if centre_set.contains(u.seq.as_slice()) {
                 continue;
             }
-            let ci = best_centre(u, &centres, error_model);
-            // Compute log_prob without holding a reference into centres,
-            // so that centres.push below is not blocked by the borrow.
-            let log_prob = seq_log_likelihood(u, &centres[ci], error_model);
+            let ci = best_centre(&logp_table[u_idx], &centres);
+            let log_prob = seq_ll(&logp_table[u_idx], &centres[ci]);
             #[allow(clippy::cast_precision_loss)]
             let log_lambda = (total_reads as f64).ln() + log_prob;
             if is_significant_log(u64::from(u.count), log_lambda, cfg.omega_a) {
-                live_centre_set.insert(u.seq.clone());
+                centre_set.insert(u.seq.as_slice());
                 centres.push(u.seq.clone());
             }
         }
 
-        // Re-assign with updated centres
-        let new_assignments2: Vec<usize> = uniques
+        // Re-assign all uniques to their nearest centre (parallel).
+        let new_assignments: Vec<usize> = logp_table
             .par_iter()
-            .map(|u| best_centre(u, &centres, error_model))
+            .map(|logp| best_centre(logp, &centres))
             .collect();
 
-        // Compute total log-likelihood
-        let ll: f64 = uniques
-            .iter()
-            .zip(new_assignments2.iter())
-            .map(|(u, &ci)| {
-                let centre = &centres[ci.min(centres.len() - 1)];
-                let ll_per_read = seq_log_likelihood(u, centre, error_model);
-                ll_per_read * f64::from(u.count)
+        // Total log-likelihood (parallel sum).
+        let ll: f64 = logp_table
+            .par_iter()
+            .zip(new_assignments.par_iter())
+            .zip(uniques.par_iter())
+            .map(|((logp, &ci), u)| {
+                seq_ll(logp, &centres[ci.min(centres.len() - 1)]) * f64::from(u.count)
             })
             .sum();
 
-        assignments = new_assignments2;
+        assignments = new_assignments;
 
         let delta = (ll - prev_ll).abs();
         let n_centres = centres.len();
         let max_iter = cfg.max_iter;
-        log::info!(
-            "dada: iter {iter}/{max_iter}, {n_centres} centres, ΔlogL = {delta:.2e}"
-        );
+        log::info!("dada: iter {iter}/{max_iter}, {n_centres} centres, ΔlogL = {delta:.2e}");
         if delta < cfg.tol {
             break;
         }
         prev_ll = ll;
     }
 
-    // Collect ASVs
-    let mut asv_counts: std::collections::HashMap<Vec<u8>, u32> = std::collections::HashMap::new();
+    // Collect ASVs using centre indices to avoid cloning sequences more than once.
+    let mut asv_counts: std::collections::HashMap<usize, u32> =
+        std::collections::HashMap::new();
     for (u, &ci) in uniques.iter().zip(assignments.iter()) {
-        let centre = centres[ci.min(centres.len() - 1)].clone();
-        *asv_counts.entry(centre).or_insert(0) += u.count;
+        let ci = ci.min(centres.len() - 1);
+        *asv_counts.entry(ci).or_insert(0) += u.count;
     }
 
     let mut asvs: Vec<Asv> = asv_counts
         .into_iter()
-        .map(|(sequence, abundance)| Asv { sequence, abundance })
+        .map(|(ci, abundance)| Asv { sequence: centres[ci].clone(), abundance })
         .collect();
-    asvs.sort_unstable_by_key(|a| std::cmp::Reverse(a.abundance));
+    asvs.sort_unstable_by_key(|a| Reverse(a.abundance));
 
     Ok(asvs)
 }
@@ -160,26 +167,22 @@ pub fn dada_pooled(
 ) -> Result<Vec<Vec<Asv>>, Dada2Error> {
     let n_samples = samples.len();
 
-    // 1. Build a PoolStore and accumulate all samples
     let mut store = PoolStore::new(500_000)?;
     for (i, sample) in samples.iter().enumerate() {
         store.add_sample(i, sample)?;
     }
 
-    // 2. Merge into pooled uniques + provenance entries
     let (pooled_uniques, pool_entries) = store.into_pooled_uniques()?;
-
-    // 3. Run DADA on the merged pool
     let pooled_asvs = dada(&pooled_uniques, error_model, cfg)?;
 
-    // 4. Build a lookup: sequence → pool entry index
+    // Build a lookup: sequence → pool entry index
     let mut seq_to_entry: std::collections::HashMap<&[u8], usize> =
         std::collections::HashMap::new();
     for (idx, u) in pooled_uniques.iter().enumerate() {
         seq_to_entry.insert(&u.seq, idx);
     }
 
-    // 5. Re-split ASVs back to per-sample
+    // Re-split ASVs back to per-sample
     let mut per_sample: Vec<std::collections::HashMap<Vec<u8>, u32>> =
         (0..n_samples).map(|_| std::collections::HashMap::new()).collect();
 
@@ -205,7 +208,6 @@ pub fn dada_pooled(
         }
     }
 
-    // Convert hashmaps to sorted Vec<Asv>
     let result: Vec<Vec<Asv>> = per_sample
         .into_iter()
         .map(|map| {
@@ -221,38 +223,40 @@ pub fn dada_pooled(
     Ok(result)
 }
 
-/// Return the index of the centre with the highest likelihood for `u`.
-fn best_centre(u: &UniqueSeq, centres: &[Vec<u8>], em: &ErrorModel) -> usize {
+/// Precompute per-position log-probability table for a single unique sequence.
+///
+/// `result[i][tb]` = log P(u.seq[i] | true_base=tb, mean_qual_at_i).
+fn precompute_logp(u: &UniqueSeq, em: &ErrorModel) -> Vec<[f64; 4]> {
+    (0..u.seq.len())
+        .map(|i| {
+            let ob = base_index(u.seq[i]);
+            let q = Phred(u.mean_qual(i) as u8);
+            std::array::from_fn(|tb| em.log_p_error(tb as u8, ob, q))
+        })
+        .collect()
+}
+
+/// Log-likelihood of unique `logp` given `centre` — pure table lookups, no transcendentals.
+fn seq_ll(logp: &[[f64; 4]], centre: &[u8]) -> f64 {
+    logp.iter()
+        .zip(centre.iter())
+        .map(|(lp, &cb)| lp[base_index(cb) as usize])
+        .sum()
+}
+
+/// Return the index of the centre with the highest log-likelihood for `logp`.
+fn best_centre(logp: &[[f64; 4]], centres: &[Vec<u8>]) -> usize {
     centres
         .iter()
         .enumerate()
-        .map(|(i, c)| (i, seq_log_likelihood(u, c, em)))
+        .map(|(i, c)| (i, seq_ll(logp, c)))
         .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
         .map_or(0, |(i, _)| i)
-}
-
-/// Log-likelihood of `u.seq` given `centre` under the error model.
-fn seq_log_likelihood(u: &UniqueSeq, centre: &[u8], em: &ErrorModel) -> f64 {
-    let len = u.seq.len().min(centre.len());
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    (0..len)
-        .map(|i| {
-            let tb = base_index(centre[i]);
-            let ob = base_index(u.seq[i]);
-            let q = Phred(u.mean_qual(i) as u8);
-            em.p_error(tb, ob, q).max(1e-300).ln()
-        })
-        .sum()
 }
 
 /// Poisson abundance significance test working entirely in log-space.
 ///
 /// Returns `true` if P(X ≥ count | Poisson(exp(log_lambda))) < `omega_a`.
-///
-/// When `log_lambda` is very negative (sequence far from centre), `exp(log_lambda)`
-/// underflows to 0.0 in f64.  We fall back to the log-space approximation:
-///   log P(X = count) ≈ count · log_lambda − log(count!)
-/// which stays representable even for log_lambda ≈ −1000.
 fn is_significant_log(count: u64, log_lambda: f64, omega_a: f64) -> bool {
     if count == 0 {
         return false;
@@ -262,12 +266,10 @@ fn is_significant_log(count: u64, log_lambda: f64, omega_a: f64) -> bool {
         let Ok(dist) = Poisson::new(lambda) else {
             return false;
         };
-        // P(X >= count) = 1 - CDF(count-1)
         let p_val: f64 = 1.0 - (0..count).map(|k| dist.pmf(k)).sum::<f64>();
         return p_val < omega_a;
     }
     // Log-space path: P(X >= count) ≈ P(X = count) when lambda is tiny.
-    // log P(X = count) = count * log_lambda - log(count!)
     #[allow(clippy::cast_precision_loss)]
     let log_p = (count as f64) * log_lambda - log_factorial(count);
     log_p < omega_a.ln()
@@ -304,8 +306,6 @@ mod tests {
 
     #[test]
     fn pooled_two_samples_same_sequence() {
-        // 2 samples each with the same true sequence at different counts.
-        // Pool → should recover the ASV, and both samples get abundance back.
         let seq = "ACGTACGTACGTACGT";
         let s1 = vec![make_unique(seq, 100)];
         let s2 = vec![make_unique(seq, 50)];
@@ -314,19 +314,16 @@ mod tests {
 
         let result = dada_pooled(&[&s1, &s2], &em, &cfg).unwrap();
         assert_eq!(result.len(), 2);
-        // Both samples should have at least one ASV
         let total_s1: u32 = result[0].iter().map(|a| a.abundance).sum();
         let total_s2: u32 = result[1].iter().map(|a| a.abundance).sum();
         assert!(total_s1 > 0, "sample 0 should have non-zero abundance");
         assert!(total_s2 > 0, "sample 1 should have non-zero abundance");
-        // Ratio should be roughly 2:1
         let ratio = f64::from(total_s1) / f64::from(total_s2);
         assert!(ratio > 1.5 && ratio < 2.5, "expected ~2:1 ratio, got {ratio:.2}");
     }
 
     #[test]
     fn single_cluster_identical_reads() {
-        // All reads are the same → should converge to exactly 1 ASV
         let uniques = vec![make_unique("ACGTACGTACGT", 1000)];
         let em = ErrorModel::illumina_default();
         let cfg = DadaConfig::default();
