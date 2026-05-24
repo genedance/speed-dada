@@ -16,28 +16,28 @@ A high-performance reimplementation of the [DADA2](https://github.com/benjjneb/d
 | `pool=TRUE` crashes with large datasets | Entire reads from all samples held in RAM simultaneously | Disk-backed `PoolStore` — flushes chunks to temp files, pages back on demand |
 | Slow processing | R/Python GIL, serial I/O | GIL released for all Rust work; Rayon parallelism at sample and intra-sample level |
 
-**Benchmark (10 000 paired 16S V3-V4 reads, 10 true ASVs):**
+**Benchmark (10 000 paired 16S V3-V4 reads, 10 true ASVs, Raspberry Pi 5 / aarch64):**
 
 | Tool | ASVs found | Total time | vs R dada2 |
 |---|---|---|---|
-| R dada2 (reference) | 11 | 16 828 ms | 1× |
-| dada2rs (R binding) | 10 | 4 460 ms | **3.8×** |
-| Python dada2 | 10 | 4 492 ms | **3.7×** |
+| R dada2 (reference) | 11 | 6 820 ms | 1× |
+| dada2rs (R binding) | 10 | 309 ms | **22×** |
+| Python dada2 | 10 | 330 ms | **21×** |
 
 All three tools recover the same 10 true sequences at identical abundances (Jaccard = 0.91, Pearson r = 1.00). The chimera present in the R output is correctly removed by `removeBimeraDenovo` / `remove_bimera_denovo` in both Rust bindings.
 
 Stage-level breakdown:
 
-| Stage | R dada2 | Rust bindings |
-|---|---|---|
-| filter | 7 356 ms | ~400–530 ms |
-| learn_errors | 7 328 ms | ~77–120 ms |
-| derep | 1 031 ms | ~116–241 ms |
-| dada | 1 063 ms | ~3 500–3 900 ms |
-| merge | 44 ms | ~1–8 ms |
-| chimera | 5 ms | ~5–17 ms |
+| Stage | R dada2 | dada2rs | Python dada2 |
+|---|---|---|---|
+| filter | 2 887 ms | 118 ms | 137 ms |
+| learn_errors | 2 313 ms | 27 ms | 25 ms |
+| derep | 888 ms | 44 ms | 39 ms |
+| dada | 685 ms | 115 ms | 129 ms |
+| merge | 43 ms | 4 ms | 1 ms |
+| chimera | 2 ms | 1 ms | &lt;1 ms |
 
-The DADA denoising step is slower in Rust due to the greedy sequential promotion algorithm (inherently sequential) combined with a suboptimal error model learned from self-alignment. All other stages are substantially faster.
+All pipeline stages are substantially faster than R dada2. The DADA denoising step — previously a bottleneck in Rust — now matches R speed after replacing per-base `ln()` calls with a precomputed log-probability lookup table.
 
 ---
 
