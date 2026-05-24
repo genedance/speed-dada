@@ -39,6 +39,16 @@ Stage-level breakdown:
 
 All pipeline stages are substantially faster than R dada2. The DADA denoising step — previously a bottleneck in Rust — now matches R speed after replacing per-base `ln()` calls with a precomputed log-probability lookup table.
 
+Peak RAM usage (same dataset):
+
+| Tool | Peak RSS | vs R dada2 |
+|---|---|---|
+| R dada2 (reference) | 863 MB | 1× |
+| dada2rs (R binding) | 115 MB | **7.5× less** |
+| Python dada2 | 62 MB | **13.8× less** |
+
+The dada2rs overhead over Python (~53 MB) is the R runtime. R dada2's 863 MB comes from holding multiple copies of reads as reference-counted R objects simultaneously; the Rust core allocates once per stage and processes in-place.
+
 ---
 
 ## Project layout
