@@ -72,23 +72,26 @@ pub fn dada(
     let mut prev_ll = f64::NEG_INFINITY;
 
     for iter in 0..cfg.max_iter {
-        // E-step: assign each unique to its best centre
-        let new_assignments: Vec<usize> = uniques
-            .par_iter()
-            .map(|u| best_centre(u, &centres, error_model))
-            .collect();
-
-        // Promote unique sequences that are significantly over-abundant
-        for (i, u) in uniques.iter().enumerate() {
-            if new_assignments[i] < centres.len() {
+        // Greedy promotion: process uniques in decreasing count order (already
+        // sorted by derep_fastq).  For each candidate we look up its CURRENT
+        // best centre — including any centres promoted earlier in this same
+        // pass — so that once a true ASV is promoted, its close neighbours
+        // (error reads) are tested against that ASV and are not spuriously
+        // promoted themselves.
+        let mut live_centre_set: std::collections::HashSet<Vec<u8>> =
+            centres.iter().cloned().collect();
+        for u in uniques.iter() {
+            if live_centre_set.contains(&u.seq) {
                 continue;
             }
-            // Already assigned to an existing centre — check if it should become one
-            let centre = &centres[new_assignments[i].min(centres.len() - 1)];
-            let err_rate = error_rate(u, centre, error_model);
+            let ci = best_centre(u, &centres, error_model);
+            // Compute log_prob without holding a reference into centres,
+            // so that centres.push below is not blocked by the borrow.
+            let log_prob = seq_log_likelihood(u, &centres[ci], error_model);
             #[allow(clippy::cast_precision_loss)]
-            let lambda = total_reads as f64 * err_rate;
-            if is_significant(u64::from(u.count), lambda, cfg.omega_a) {
+            let log_lambda = (total_reads as f64).ln() + log_prob;
+            if is_significant_log(u64::from(u.count), log_lambda, cfg.omega_a) {
+                live_centre_set.insert(u.seq.clone());
                 centres.push(u.seq.clone());
             }
         }
@@ -228,25 +231,6 @@ fn best_centre(u: &UniqueSeq, centres: &[Vec<u8>], em: &ErrorModel) -> usize {
         .map_or(0, |(i, _)| i)
 }
 
-/// Compute the mean per-base error rate between `u` and `centre`.
-fn error_rate(u: &UniqueSeq, centre: &[u8], em: &ErrorModel) -> f64 {
-    let len = u.seq.len().min(centre.len());
-    if len == 0 {
-        return 1.0;
-    }
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
-    let rate: f64 = (0..len)
-        .map(|i| {
-            let tb = base_index(centre[i]);
-            let ob = base_index(u.seq[i]);
-            let q = Phred(u.mean_qual(i) as u8);
-            em.p_error(tb, ob, q)
-        })
-        .sum::<f64>()
-        / len as f64;
-    rate.max(1e-300)
-}
-
 /// Log-likelihood of `u.seq` given `centre` under the error model.
 fn seq_log_likelihood(u: &UniqueSeq, centre: &[u8], em: &ErrorModel) -> f64 {
     let len = u.seq.len().min(centre.len());
@@ -261,22 +245,46 @@ fn seq_log_likelihood(u: &UniqueSeq, centre: &[u8], em: &ErrorModel) -> f64 {
         .sum()
 }
 
-/// Poisson abundance significance test.
+/// Poisson abundance significance test working entirely in log-space.
 ///
-/// Returns `true` if P(X ≥ count | Poisson(lambda)) < `omega_a`.
-fn is_significant(count: u64, lambda: f64, omega_a: f64) -> bool {
-    if lambda <= 0.0 || count == 0 {
+/// Returns `true` if P(X ≥ count | Poisson(exp(log_lambda))) < `omega_a`.
+///
+/// When `log_lambda` is very negative (sequence far from centre), `exp(log_lambda)`
+/// underflows to 0.0 in f64.  We fall back to the log-space approximation:
+///   log P(X = count) ≈ count · log_lambda − log(count!)
+/// which stays representable even for log_lambda ≈ −1000.
+fn is_significant_log(count: u64, log_lambda: f64, omega_a: f64) -> bool {
+    if count == 0 {
         return false;
     }
-    let Ok(dist) = Poisson::new(lambda) else {
-        return false;
-    };
-    // P(X >= count) = 1 - CDF(count-1)
-    let p_val: f64 = 1.0
-        - (0..count)
-            .map(|k| dist.pmf(k))
-            .sum::<f64>();
-    p_val < omega_a
+    let lambda = log_lambda.exp();
+    if lambda >= 1e-14 {
+        let Ok(dist) = Poisson::new(lambda) else {
+            return false;
+        };
+        // P(X >= count) = 1 - CDF(count-1)
+        let p_val: f64 = 1.0 - (0..count).map(|k| dist.pmf(k)).sum::<f64>();
+        return p_val < omega_a;
+    }
+    // Log-space path: P(X >= count) ≈ P(X = count) when lambda is tiny.
+    // log P(X = count) = count * log_lambda - log(count!)
+    #[allow(clippy::cast_precision_loss)]
+    let log_p = (count as f64) * log_lambda - log_factorial(count);
+    log_p < omega_a.ln()
+}
+
+fn log_factorial(n: u64) -> f64 {
+    if n == 0 {
+        return 0.0;
+    }
+    if n <= 20 {
+        #[allow(clippy::cast_precision_loss)]
+        return (1..=n).map(|k| (k as f64).ln()).sum();
+    }
+    // Stirling approximation
+    #[allow(clippy::cast_precision_loss)]
+    let nf = n as f64;
+    nf * nf.ln() - nf + 0.5 * (2.0 * std::f64::consts::PI * nf).ln()
 }
 
 #[cfg(test)]
