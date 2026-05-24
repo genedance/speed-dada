@@ -1,0 +1,14 @@
+[package]
+name = "dada2-r"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "dada2_r"
+crate-type = ["staticlib"]
+
+[dependencies]
+extendr-api.workspace = true
+dada2-core.workspace = true

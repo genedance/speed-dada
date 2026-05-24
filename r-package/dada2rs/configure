@@ -1,0 +1,25 @@
+#!/bin/sh
+# configure — find workspace root and cargo, then stamp Makevars.in → Makevars.
+# R CMD INSTALL runs this from the package root directory.
+
+set -e
+
+PKG_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Package lives at <workspace>/r-package/dada2rs/; workspace is two levels up.
+WORKSPACE_ROOT="$(cd "${PKG_DIR}/../.." && pwd)"
+
+# Locate cargo: prefer $HOME/.cargo/bin, then PATH.
+if [ -x "${HOME}/.cargo/bin/cargo" ]; then
+    CARGO="${HOME}/.cargo/bin/cargo"
+elif command -v cargo >/dev/null 2>&1; then
+    CARGO="$(command -v cargo)"
+else
+    echo "ERROR: cargo not found. Install Rust from https://rustup.rs" >&2
+    exit 1
+fi
+
+echo "dada2rs: workspace=${WORKSPACE_ROOT}  cargo=${CARGO}"
+
+sed -e "s|@WORKSPACE_ROOT@|${WORKSPACE_ROOT}|g" \
+    -e "s|@CARGO@|${CARGO}|g" \
+    "${PKG_DIR}/src/Makevars.in" > "${PKG_DIR}/src/Makevars"

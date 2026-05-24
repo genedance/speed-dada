@@ -1,0 +1,14 @@
+Package: dada2rs
+Type: Package
+Title: Drop-in replacement for dada2 backed by a Rust core
+Version: 0.1.0
+Author: dada2-rs contributors
+Maintainer: dada2-rs contributors <noreply@example.com>
+Description: Provides filterAndTrim, learnErrors, derepFastq, dada,
+    mergePairs, makeSequenceTable, and removeBimeraDenovo using a
+    high-performance Rust implementation via extendr.
+    Compatible with the original R dada2 API (Callahan et al. 2016).
+License: MIT
+NeedsCompilation: yes
+SystemRequirements: Cargo (>= 1.78), Rust toolchain, libbz2
+Depends: R (>= 4.1.0)

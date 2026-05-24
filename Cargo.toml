@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/dada2-core",
     "crates/dada2-py",
+    "crates/dada2-r",
 ]
 
 [workspace.package]
@@ -25,6 +26,7 @@ log            = "0.4"
 env_logger     = "0.11"
 tempfile       = "3"
 pyo3           = { version = "0.23", features = ["extension-module"] }
+extendr-api    = { version = "0.9", default-features = false }
 dada2-core     = { path = "crates/dada2-core" }
 
 [profile.release]

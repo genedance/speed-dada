@@ -1,0 +1,5 @@
+r-package/dada2rs/src/*.so
+r-package/dada2rs/src/*.o
+target/
+
+target/

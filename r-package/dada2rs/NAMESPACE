@@ -1,0 +1,9 @@
+useDynLib(dada2rs, .registration = TRUE)
+
+export(filterAndTrim)
+export(learnErrors)
+export(derepFastq)
+export(dada)
+export(mergePairs)
+export(makeSequenceTable)
+export(removeBimeraDenovo)
