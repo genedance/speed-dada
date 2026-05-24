@@ -2,7 +2,7 @@
 
 use crate::types::{
     PyDadaResult, PyErrorModel, PyFilterConfig, PyFilterStats, PyFilterStatsPaired,
-    PyQualityProfile, PySequenceTable, PyTaxonAssignment,
+    PyMergedRead, PyQualityProfile, PySequenceTable, PyTaxonAssignment,
 };
 use dada2_core::{
     chimera::remove_bimera_denovo,
@@ -345,7 +345,10 @@ pub fn dada_pooled_py(
 ///
 /// Returns
 /// -------
-/// list[tuple[bytes, int]]
+/// list[MergedRead]
+///     Each element has ``.sequence``, ``.abundance``, ``.accept``,
+///     ``.nmatch``, ``.nmismatch``, ``.nindel`` attributes (compatible
+///     with R dada2 ``mergePairs`` column names).
 #[pyfunction]
 #[pyo3(name = "merge_pairs")]
 #[pyo3(signature = (fwd_dada, rev_dada, min_overlap = 20))]
@@ -354,7 +357,7 @@ pub fn merge_pairs_py(
     fwd_dada: &PyDadaResult,
     rev_dada: &PyDadaResult,
     min_overlap: usize,
-) -> PyResult<Vec<(Vec<u8>, u32)>> {
+) -> PyResult<Vec<PyMergedRead>> {
     let inner_fwd = fwd_dada.0.clone();
     let inner_rev = rev_dada.0.clone();
     let merged = py
@@ -363,7 +366,7 @@ pub fn merge_pairs_py(
             merge_pairs(&inner_fwd, &inner_rev, &cfg)
         })
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-    Ok(merged.into_iter().map(|m| (m.sequence, m.abundance)).collect())
+    Ok(merged.into_iter().map(PyMergedRead::from).collect())
 }
 
 /// Remove bimeric (chimeric) sequences.
@@ -371,20 +374,20 @@ pub fn merge_pairs_py(
 /// Parameters
 /// ----------
 /// seqs : list[tuple[bytes, int]]
+///     (sequence, abundance) pairs.
 ///
 /// Returns
 /// -------
-/// list[bytes]
+/// list[tuple[bytes, int]]
+///     Non-chimeric (sequence, abundance) pairs.
 #[pyfunction]
 #[pyo3(name = "remove_bimera_denovo")]
 pub fn remove_bimera_denovo_py(
     py: Python<'_>,
     seqs: Vec<(Vec<u8>, u32)>,
-) -> PyResult<Vec<Vec<u8>>> {
-    let result = py
-        .allow_threads(move || remove_bimera_denovo(&seqs))
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-    Ok(result.into_iter().map(|(s, _)| s).collect())
+) -> PyResult<Vec<(Vec<u8>, u32)>> {
+    py.allow_threads(move || remove_bimera_denovo(&seqs))
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
 }
 
 /// Assign taxonomy to ASV sequences using a reference FASTA.

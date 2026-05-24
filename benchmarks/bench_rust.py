@@ -56,22 +56,20 @@ merged = dada2.merge_pairs(res_fwd, res_rev, min_overlap=12)
 t_merge = time.perf_counter() - t1
 print(f"[merge_pairs]             merged={len(merged)}  ({t_merge*1000:.1f} ms)")
 
-# 6. Remove bimeras
+# 6. Remove bimeras — pass (sequence, abundance) pairs
 t1 = time.perf_counter()
-clean = dada2.remove_bimera_denovo(merged)
+clean = dada2.remove_bimera_denovo([(m.sequence, m.abundance) for m in merged])
 t_chimera = time.perf_counter() - t1
 print(f"[remove_bimera_denovo]    asvs_out={len(clean)}  ({t_chimera*1000:.1f} ms)")
 
 t_total_ms = (time.perf_counter() - t_total) * 1000
 print(f"\nTotal Python binding time: {t_total_ms:.1f} ms")
 
-# Build result
-merged_dict = {(m[0].decode() if isinstance(m[0], bytes) else m[0]): m[1]
-               for m in merged}
+# Build result — clean is list[tuple[bytes, int]]
 asvs = []
-for seq in clean:
+for seq, abund in clean:
     s = seq.decode() if isinstance(seq, bytes) else seq
-    asvs.append({"sequence": s, "abundance": merged_dict.get(s, 0)})
+    asvs.append({"sequence": s, "abundance": abund})
 asvs.sort(key=lambda x: -x["abundance"])
 
 result = {

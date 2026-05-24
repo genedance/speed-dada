@@ -4,6 +4,7 @@ use dada2_core::{
     dada::Asv,
     error_model::ErrorModel,
     filter::FilterConfig,
+    merge::MergedRead,
     sequence_table::SequenceTable,
 };
 use pyo3::prelude::*;
@@ -157,6 +158,52 @@ impl PyDadaResult {
 
     fn __repr__(&self) -> String {
         format!("DadaResult(n_asvs={})", self.0.len())
+    }
+}
+
+// ── MergedRead ───────────────────────────────────────────────────────────────
+
+/// A single merged paired-end read.
+///
+/// Attributes
+/// ----------
+/// sequence : bytes
+/// abundance : int
+/// accept : bool
+///     Always True (rejected reads are not returned).
+/// nmatch : int
+///     Number of matching bases in the overlap region.
+/// nmismatch : int
+///     Number of mismatching bases in the overlap region.
+/// nindel : int
+///     Number of indels in the overlap (always 0 for this aligner).
+#[pyclass(name = "MergedRead")]
+pub struct PyMergedRead {
+    #[pyo3(get)] pub sequence: Vec<u8>,
+    #[pyo3(get)] pub abundance: u32,
+    #[pyo3(get)] pub accept: bool,
+    #[pyo3(get)] pub nmatch: usize,
+    #[pyo3(get)] pub nmismatch: u32,
+    #[pyo3(get)] pub nindel: u32,
+}
+
+impl From<MergedRead> for PyMergedRead {
+    fn from(m: MergedRead) -> Self {
+        Self {
+            sequence: m.sequence,
+            abundance: m.abundance,
+            accept: true,
+            nmatch: m.overlap_len,
+            nmismatch: m.n_mismatches,
+            nindel: 0,
+        }
+    }
+}
+
+#[pymethods]
+impl PyMergedRead {
+    fn __repr__(&self) -> String {
+        format!("MergedRead(abundance={}, nmatch={}, nmismatch={})", self.abundance, self.nmatch, self.nmismatch)
     }
 }
 

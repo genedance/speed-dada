@@ -16,7 +16,7 @@ use functions::{
 };
 use types::{
     PyDadaResult, PyErrorModel, PyFilterConfig, PyFilterStats, PyFilterStatsPaired,
-    PyQualityProfile, PySequenceTable, PyTaxonAssignment,
+    PyMergedRead, PyQualityProfile, PySequenceTable, PyTaxonAssignment,
 };
 use pyo3::prelude::*;
 
@@ -47,6 +47,7 @@ fn dada2(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyErrorModel>()?;
     m.add_class::<PyDadaResult>()?;
     m.add_class::<PyTaxonAssignment>()?;
+    m.add_class::<PyMergedRead>()?;
 
     m.add("__version__", version())?;
     Ok(())
