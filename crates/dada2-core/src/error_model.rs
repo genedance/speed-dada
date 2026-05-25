@@ -147,20 +147,32 @@ pub fn learn_errors(
         return Err(Dada2Error::InvalidInput("no reads supplied to learn_errors".into()));
     }
 
-    // Accumulate transition counts: counts[trans][qual] = n observations
-    let mut counts = Array2::<f64>::zeros((N_TRANSITIONS, MAX_QUAL));
+    // Accumulate transition counts in parallel: each thread gets its own
+    // Array2 accumulator; final result is their element-wise sum.
     let n = cfg.n_reads.min(records.len());
-
-    for rec in &records[..n] {
-        for (&base, &qc) in rec.seq.iter().zip(rec.qual.iter()) {
-            let bi = base_index(base) as usize;
-            let q = Phred::from_ascii(qc).0 as usize;
-            let col = q.min(MAX_QUAL - 1);
-            // Self-comparison: transition = base → base (match)
-            let row = bi * 4 + bi;
-            counts[[row, col]] += 1.0;
-        }
-    }
+    let counts = records[..n]
+        .par_iter()
+        .fold(
+            || Array2::<f64>::zeros((N_TRANSITIONS, MAX_QUAL)),
+            |mut acc, rec| {
+                for (&base, &qc) in rec.seq.iter().zip(rec.qual.iter()) {
+                    let bi = base_index(base) as usize;
+                    let q = Phred::from_ascii(qc).0 as usize;
+                    let col = q.min(MAX_QUAL - 1);
+                    // Self-comparison: transition = base → base (match)
+                    let row = bi * 4 + bi;
+                    acc[[row, col]] += 1.0;
+                }
+                acc
+            },
+        )
+        .reduce(
+            || Array2::<f64>::zeros((N_TRANSITIONS, MAX_QUAL)),
+            |mut a, b| {
+                a += &b;
+                a
+            },
+        );
 
     // Logistic regression fit per transition class — all 16 rows are independent.
     let rows: Vec<Array1<f64>> = (0..N_TRANSITIONS)
