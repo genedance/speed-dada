@@ -13,60 +13,70 @@ A high-performance reimplementation of the [DADA2](https://github.com/benjjneb/d
 
 | Problem | Root cause | Solution here |
 |---|---|---|
-| `pool=TRUE` crashes with large datasets | Entire reads from all samples held in RAM simultaneously | Disk-backed `PoolStore` — flushes chunks to temp files, pages back on demand |
+| `pool=TRUE` crashes with large datasets | Entire reads from all samples held in RAM simultaneously | Disk-backed `PoolStore` — flushes binary chunks to temp files, pages back on demand |
 | Slow processing | R/Python GIL, serial I/O | GIL released for all Rust work; Rayon parallelism at sample and intra-sample level |
+| High RAM use at scale | R holds multiple copies of read data as R objects; dense k-mer matrices | Streaming derep; f32 logp tables (2× smaller); bitset taxonomy profiles (32× smaller) |
 
-**Benchmark (10 000 paired 16S V3-V4 reads, 10 true ASVs, Raspberry Pi 5 / aarch64):**
+---
+
+## Benchmarks
+
+### 10 000 paired reads (Raspberry Pi 5 / aarch64, 4 cores)
 
 | Tool | ASVs found | Total time | vs R dada2 |
 |---|---|---|---|
-| R dada2 (reference) | 11 | 6 820 ms | 1× |
-| dada2rs (R binding) | 10 | 309 ms | **22×** |
-| Python dada2 | 10 | 330 ms | **21×** |
+| R dada2 (reference) | 11 | 6 919 ms | 1× |
+| dada2rs (R binding) | 10 | 305 ms | **23×** |
+| Python dada2 | 10 | 310 ms | **22×** |
 
-All three tools recover the same 10 true sequences at identical abundances (Jaccard = 0.91, Pearson r = 1.00). The chimera present in the R output is correctly removed by `removeBimeraDenovo` / `remove_bimera_denovo` in both Rust bindings.
+### 100 000 paired reads (same hardware)
 
-Stage-level breakdown:
-
-| Stage | R dada2 | dada2rs | Python dada2 |
+| Tool | ASVs found | Total time | vs R dada2 |
 |---|---|---|---|
-| filter | 2 887 ms | 118 ms | 137 ms |
-| learn_errors | 2 313 ms | 27 ms | 25 ms |
-| derep | 888 ms | 44 ms | 39 ms |
-| dada | 685 ms | 115 ms | 129 ms |
-| merge | 43 ms | 4 ms | 1 ms |
-| chimera | 2 ms | 1 ms | <1 ms |
+| R dada2 (reference) | 11 | 36 271 ms | 1× |
+| Python dada2 | 10 | 2 376 ms | **15×** |
 
-All pipeline stages are substantially faster than R dada2. The DADA denoising step — previously a bottleneck in Rust — now matches R speed after replacing per-base `ln()` calls with a precomputed log-probability lookup table.
+All Rust tools recover the same 10 true sequences at identical abundances (Jaccard = 0.909, Pearson r = 1.000). The 11th R dada2 output is a chimera correctly removed by `remove_bimera_denovo`.
 
-Peak RAM usage (same dataset):
+### Stage-level breakdown — 100k reads
+
+| Stage | R dada2 | Python dada2 | Speedup |
+|---|---|---|---|
+| filter | 15 135 ms | 1 218 ms | 12× |
+| learn_errors | 14 055 ms | 63 ms | **223×** |
+| derep | 2 881 ms | 380 ms | 8× |
+| dada | 3 953 ms | 714 ms | 6× |
+| merge | 244 ms | 0.4 ms | 610× |
+| chimera | 3 ms | 0.2 ms | 15× |
+
+### Peak RAM — 100k reads
 
 | Tool | Peak RSS | vs R dada2 |
 |---|---|---|
-| R dada2 (reference) | 863 MB | 1× |
-| dada2rs (R binding) | 115 MB | **7.5× less** |
-| Python dada2 | 62 MB | **13.8× less** |
+| R dada2 (reference) | ~860 MB | 1× |
+| Python dada2 | ~85 MB | **~10× less** |
 
-The dada2rs overhead over Python (~53 MB) is the R runtime. R dada2's 863 MB comes from holding multiple copies of reads as reference-counted R objects simultaneously; the Rust core allocates once per stage and processes in-place.
+R dada2's RAM comes from holding multiple copies of reads as reference-counted R objects simultaneously. The Rust core allocates once per stage, streams I/O, and uses compact data representations.
 
-### Per-stage micro-benchmarks (Criterion, Raspberry Pi 5 / aarch64, 4 cores)
+### Criterion micro-benchmarks (Raspberry Pi 5 / aarch64, 4 cores)
 
 Measured with `cargo bench --package dada2-core --bench pipeline`.
 
 | Stage | Input | Median time | Throughput |
 |---|---|---|---|
-| `merge_pairs` | 10 fwd × 10 rev ASVs | 335 µs | 326 K pairs/s |
-| `merge_pairs` | 30 × 30 | 2.43 ms | 414 K pairs/s |
-| `merge_pairs` | 60 × 60 | 9.06 ms | 436 K pairs/s |
-| `taxonomy_build` | 50 reference sequences | 2.96 ms | 17 K refs/s |
-| `taxonomy_build` | 200 references | 12.5 ms | 16 K refs/s |
-| `taxonomy_build` | 500 references | 30.6 ms | 16 K refs/s |
-| `taxonomy_classify` | 10 query sequences | 1.77 ms | 5.6 K q/s |
-| `taxonomy_classify` | 200 queries | 30.2 ms | 6.6 K q/s |
-| `dada_denoise` | 200 reads | 2.3 ms | 86 K reads/s |
-| `dada_denoise` | 1 000 reads | 19.8 ms | 51 K reads/s |
+| `merge_pairs` | 10 fwd × 10 rev ASVs | 310 µs | 322 K pairs/s |
+| `merge_pairs` | 30 × 30 | 2.19 ms | 411 K pairs/s |
+| `merge_pairs` | 60 × 60 | 8.29 ms | 434 K pairs/s |
+| `taxonomy_build` | 50 reference sequences | 0.20 ms | 256 K refs/s |
+| `taxonomy_build` | 200 references | 0.72 ms | 276 K refs/s |
+| `taxonomy_build` | 500 references | 1.89 ms | 264 K refs/s |
+| `taxonomy_classify` | 10 query sequences | 21.5 ms | — |
+| `taxonomy_classify` | 200 queries | 375 ms | — |
+| `dada_denoise` | 200 reads | 2.32 ms | 86 K reads/s |
+| `dada_denoise` | 500 reads | 8.13 ms | 62 K reads/s |
+| `dada_denoise` | 1 000 reads | 28.3 ms | 35 K reads/s |
 
-Peak RSS across the full benchmark run: **132 MiB**. CPU saturates to **96% busy** (4% idle) during parallel sections — all 4 cores active. `merge_pairs` throughput improves with larger batches (326 → 436 K pairs/s) as rayon thread-dispatch overhead is amortised over more work.
+`taxonomy_build` is 16× faster than the previous count-vector implementation after switching to 8 KB bitset profiles (vs 262 KB). `taxonomy_classify` timing reflects scoring 100 references with 100 bootstrap replicates on a small synthetic database — real databases (15k+ references) see a larger benefit from the improved cache footprint.
 
 ---
 
@@ -87,10 +97,10 @@ dada2_rust/
 │   │       ├── dada.rs            # DADA algorithm + pooled variant
 │   │       ├── merge.rs           # paired-end merging
 │   │       ├── chimera.rs         # bimera detection
-│   │       ├── taxonomy.rs        # naive Bayes k-mer classifier
+│   │       ├── taxonomy.rs        # naive Bayes k-mer classifier (bitset profiles)
 │   │       ├── sequence_table.rs  # sample × ASV count matrix
 │   │       ├── align.rs           # Hamming / mismatch primitives (SIMD-auto-vectorised)
-│   │       ├── pool.rs            # disk-backed pooled dereplication
+│   │       ├── pool.rs            # disk-backed pooled dereplication (bincode chunks)
 │   │       └── io/
 │   │           ├── fastq.rs       # streaming FASTQ parser (needletail)
 │   │           └── fasta.rs       # FASTA reference reader
@@ -183,7 +193,7 @@ promote if log p < log(ω_A)
 
 ```bash
 cargo build --release --workspace
-cargo test --workspace          # 25 unit tests + 1 integration test
+cargo test --workspace          # 27 unit tests + 1 integration test
 ```
 
 ### Python extension (development install)
@@ -224,7 +234,8 @@ dada2.init_logging()     # enable Rust-level log output (default level: "info")
 
 # Auto-detect optimal thread count from available cores and RAM
 n_threads, ram_mb = dada2.configure_runtime()   # returns (4, 6959) on RPi5
-# Override: dada2.configure_runtime(n_threads=2)
+# Override thread count: dada2.configure_runtime(n_threads=2)
+# Override RAM-per-thread budget (MiB): dada2.configure_runtime(mb_per_thread=800)
 ```
 
 ### Classes
@@ -458,31 +469,41 @@ cat(ncol(seqtab), "non-chimeric ASVs\n")
 ### Greedy sequential promotion (DADA algorithm)
 New cluster centers are added in decreasing count order. After each promotion, subsequent candidates are evaluated against the updated center set. This matches R dada2's behavior and prevents spurious promotion of low-abundance error reads that happen to differ from the initial cluster center at many positions.
 
-### Precomputed log-probability table
-`ErrorModel` holds a 16×41 `log_matrix` (one row per transition pair, one column per Phred score) built at construction time. The inner DADA loop looks up `log_matrix[[transition, phred]]` instead of calling `f64::ln()` (~100 ns on aarch64 vs ~2 ns for an array access). Per-unique `[[f64; 4]]` arrays are precomputed in parallel at `dada()` entry; `seq_ll()` becomes a pure array-index sum that LLVM auto-vectorises.
+### Precomputed f32 log-probability table
+`ErrorModel` holds a 16×41 `log_matrix` (one row per transition pair, one column per Phred score) built at construction time. The inner DADA loop looks up `log_matrix[[transition, phred]]` instead of calling `f64::ln()`. Per-unique `[[f32; 4]]` arrays are precomputed in parallel at `dada()` entry — stored as `f32` (half the RAM of `f64`, no clustering accuracy impact since scores are compared relatively). `seq_ll()` upcasts to `f64` before summing. The result is a pure array-index sum that LLVM auto-vectorises.
+
+### Zero-alloc chimera detection
+`is_bimera` operates directly on the pre-sorted `(sequence, abundance)` slice, filtering parents inline by abundance threshold. This eliminates the `Vec<&[u8]>` allocation that would otherwise be created for every candidate sequence — critical for experiments with thousands of sequences.
+
+### Bitset taxonomy profiles
+The RDP k-mer classifier stores profiles as `Vec<u64>` bitsets (presence/absence per k-mer) rather than `Vec<u32>` count vectors. At k=8:
+- Count vector: 4⁸ × 4 bytes = **262 KB per reference**
+- Bitset: 4⁸ / 8 bytes = **8 KB per reference** — 32× smaller
+
+For a 15k-entry SILVA database this reduces the in-memory database from ~4 GB to ~120 MB, fitting entirely in L3 cache. Scoring (`popcount(AND(query_bits, profile_bits))`) is SIMD-vectorisable to AVX2/NEON. Bootstrap replicates reuse a single preallocated buffer (no per-rep Vec allocation).
 
 ### GIL release
 Every CPU-bound Python function calls `py.allow_threads(|| { … })` before entering Rust. Python threads remain live while Rust works.
 
 ### Streaming I/O
-`filter_and_trim` and `filter_and_trim_paired` read and write one FASTQ record at a time. No full-file accumulation — a 100 GB file uses no more RAM than a 1 MB file during filtering.
+`filter_and_trim` and `filter_and_trim_paired` read and write one FASTQ record at a time. `derep_fastq_path` streams directly to the deduplication HashMap without materialising all records. A 100 GB file uses no more RAM than a 1 MB file during filtering or dereplication.
 
 ### Disk-backed pooling (`pool.rs`)
-`PoolStore` accumulates unique sequences from multiple samples in a `BTreeMap`. When the in-memory entry count exceeds `flush_threshold` (default 500 000), the current map is serialised to a JSONL chunk in a `tempfile::TempDir` and cleared. `into_pooled_uniques()` re-merges all chunks into a single sorted `Vec<UniqueSeq>` for DADA. `dada_pooled` re-splits ASV assignments back to per-sample lists using provenance stored during accumulation.
+`PoolStore` accumulates unique sequences from multiple samples in a `BTreeMap`. When the in-memory entry count exceeds `flush_threshold` (default 500 000), the current map is serialised to a **bincode** binary chunk in a `tempfile::TempDir` and cleared. `into_pooled_uniques()` re-merges all chunks into a single sorted `Vec<UniqueSeq>` for DADA. `dada_pooled` re-splits ASV assignments back to per-sample lists using provenance stored during accumulation. Bincode chunks are ~3× smaller than the previous JSONL format.
 
 ### SIMD alignment (`align.rs`)
 `hamming_distance`, `first_mismatch`, and `range_equal` are scalar loops that LLVM reliably auto-vectorises to AVX2 / NEON when compiled with `target-cpu=native`. `chimera.rs`, `merge.rs`, and `primer.rs` delegate to these primitives.
 
 ### Rayon parallelism and hardware-aware configuration
-`RuntimeConfig::detect()` (exposed as `dada2.configure_runtime()` in Python) reads `available_parallelism()` for the CPU count and `MemAvailable` from `/proc/meminfo` to cap the rayon thread count at `min(n_cpu, ram_mb / 256)`. This prevents OOM on memory-constrained machines while using all cores when RAM is ample. The config is applied via `rayon::ThreadPoolBuilder::build_global()` at startup.
+`RuntimeConfig::detect()` (exposed as `dada2.configure_runtime()` in Python) reads `available_parallelism()` for the CPU count and `MemAvailable` from `/proc/meminfo` to cap the rayon thread count at `min(n_cpu, ram_mb / mb_per_thread)`. The default budget is **512 MiB per thread**; pass `mb_per_thread=800` for DADA-heavy workloads or `mb_per_thread=64` for filter/taxonomy-only runs. The config is applied via `rayon::ThreadPoolBuilder::build_global()` at startup.
 
+Parallel stages:
 - **Pipeline level:** `run_pipeline` filters all input samples in parallel, then dereplicates and denoises each sample in parallel.
 - **Sample level:** `filter_and_trim_many` and `filter_and_trim_paired_many` process N FASTQ pairs across the Rayon thread pool.
+- **Error learning:** transition counts accumulated with `par_iter().fold().reduce()` — each thread accumulates into a thread-local `Array2`, results element-wise summed.
 - **Intra-sample:** DADA re-assignment, chimera candidate scan, taxonomy classification, and pooled sample ingestion all use `par_iter()`.
 - **Paired-end merging:** the O(n×m) fwd × rev ASV pair loop runs as `fwd_asvs.par_iter().flat_map(...)`.
-- **Taxonomy database build:** reference k-mer profile construction uses `records.par_iter()`.
-
-LLVM auto-vectorises `hamming_distance` and related loops to AVX2 (x86-64) or NEON (AArch64) when compiled with `target-cpu=native` (set in `.cargo/config.toml`).
+- **Taxonomy database build:** reference bitset profile construction uses `records.par_iter().map().unzip()`.
 
 ### Type safety
 Domain primitives are newtypes — `Phred(u8)` and `Kmer(u64)` — preventing argument-order bugs. All errors propagate via `Dada2Error` (thiserror); no `.unwrap()` or `.expect()` in library code.
@@ -596,7 +617,8 @@ Compatible with SILVA (`tax_slv_ssu_*.txt`) and GTDB lineage files. If `lineage_
 | `ndarray` | 0.15 | 2-D error matrix |
 | `statrs` | 0.17 | Poisson distribution for abundance p-values |
 | `thiserror` | 1 | Ergonomic error types |
-| `serde` / `serde_json` | 1 | Serialisation for pool chunks and JSON output |
+| `serde` / `serde_json` | 1 | Serialisation for JSON output |
+| `bincode` | 1 | Binary serialisation for `PoolStore` disk chunks |
 | `tempfile` | 3 | Temp directory for `PoolStore` disk chunks |
 
 ---
