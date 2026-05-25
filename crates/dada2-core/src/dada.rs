@@ -67,8 +67,8 @@ pub fn dada(
 
     // Precompute per-position log-probability lookup tables for every unique sequence.
     // logp_table[u][i][tb] = log P(u.seq[i] | true_base=tb, mean_qual_at_i)
-    // This moves all ln() calls out of the per-unique-per-centre inner loop.
-    let logp_table: Vec<Vec<[f64; 4]>> = uniques
+    // Stored as f32 (half the RAM of f64); seq_ll upcasts to f64 for accumulation.
+    let logp_table: Vec<Vec<[f32; 4]>> = uniques
         .par_iter()
         .map(|u| precompute_logp(u, error_model))
         .collect();
@@ -226,28 +226,31 @@ pub fn dada_pooled(
 /// Precompute per-position log-probability table for a single unique sequence.
 ///
 /// `result[i][tb]` = log P(u.seq[i] | `true_base=tb`, `mean_qual_at_i`).
-fn precompute_logp(u: &UniqueSeq, em: &ErrorModel) -> Vec<[f64; 4]> {
+/// Stored as `f32` — halves the logp-table RAM cost vs `f64` with no loss of
+/// clustering accuracy (scores compared relatively, not absolutely).
+fn precompute_logp(u: &UniqueSeq, em: &ErrorModel) -> Vec<[f32; 4]> {
     (0..u.seq.len())
         .map(|i| {
             let ob = base_index(u.seq[i]);
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let q = Phred(u.mean_qual(i) as u8);
             #[allow(clippy::cast_possible_truncation)]
-            std::array::from_fn(|tb| em.log_p_error(tb as u8, ob, q))
+            std::array::from_fn(|tb| em.log_p_error(tb as u8, ob, q) as f32)
         })
         .collect()
 }
 
 /// Log-likelihood of unique `logp` given `centre` — pure table lookups, no transcendentals.
-fn seq_ll(logp: &[[f64; 4]], centre: &[u8]) -> f64 {
+/// Upcasts f32 entries to f64 before accumulating to preserve sum precision.
+fn seq_ll(logp: &[[f32; 4]], centre: &[u8]) -> f64 {
     logp.iter()
         .zip(centre.iter())
-        .map(|(lp, &cb)| lp[base_index(cb) as usize])
+        .map(|(lp, &cb)| f64::from(lp[base_index(cb) as usize]))
         .sum()
 }
 
 /// Return the index of the centre with the highest log-likelihood for `logp`.
-fn best_centre(logp: &[[f64; 4]], centres: &[Vec<u8>]) -> usize {
+fn best_centre(logp: &[[f32; 4]], centres: &[Vec<u8>]) -> usize {
     centres
         .iter()
         .enumerate()
