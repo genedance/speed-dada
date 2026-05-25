@@ -17,16 +17,28 @@ pub struct RuntimeConfig {
 impl RuntimeConfig {
     /// Detect optimal settings from the current hardware.
     ///
-    /// Thread count is capped to `available_ram_mb / 256` so that
-    /// memory-intensive pipeline stages don't thrash the allocator.
+    /// Thread count is capped to `available_ram_mb / 512` by default.
+    /// Use [`Self::detect_with`] to override the per-thread RAM assumption.
     #[must_use]
     pub fn detect() -> Self {
+        Self::detect_with(512)
+    }
+
+    /// Like [`Self::detect`] but with an explicit per-thread RAM budget in MiB.
+    ///
+    /// Typical values:
+    /// - `512` — conservative default, suits most pipeline stages
+    /// - `800` — DADA-heavy workloads where each thread holds a full logp table
+    /// - `64`  — taxonomy-only or filter-only runs
+    #[must_use]
+    pub fn detect_with(mb_per_thread: u64) -> Self {
         let n_cpu = available_parallelism().map_or(1, std::num::NonZeroUsize::get);
         let mem_available_mb = read_available_memory_mb();
 
         let n_threads = match mem_available_mb {
             Some(mb) => {
-                let by_ram = ((mb / 256) as usize).max(1);
+                #[allow(clippy::cast_possible_truncation)]
+                let by_ram = ((mb / mb_per_thread) as usize).max(1);
                 n_cpu.min(by_ram)
             }
             None => n_cpu,

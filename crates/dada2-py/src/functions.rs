@@ -37,6 +37,9 @@ pub fn version() -> &'static str {
 /// ----------
 /// n_threads : int, optional
 ///     Override the number of worker threads. 0 means auto-detect.
+/// mb_per_thread : int, optional
+///     Assumed RAM cost per worker thread in MiB (default 512).
+///     Use 800 for DADA-heavy runs; 64 for filter/taxonomy-only runs.
 ///
 /// Returns
 /// -------
@@ -44,12 +47,12 @@ pub fn version() -> &'static str {
 ///     ``(n_threads_configured, available_ram_mb)``
 #[pyfunction]
 #[pyo3(name = "configure_runtime")]
-#[pyo3(signature = (n_threads = 0))]
-pub fn configure_runtime_py(n_threads: usize) -> (usize, Option<u64>) {
+#[pyo3(signature = (n_threads = 0, mb_per_thread = 512))]
+pub fn configure_runtime_py(n_threads: usize, mb_per_thread: u64) -> (usize, Option<u64>) {
     let cfg = if n_threads == 0 {
-        RuntimeConfig::detect()
+        RuntimeConfig::detect_with(mb_per_thread)
     } else {
-        RuntimeConfig::detect().with_threads(n_threads)
+        RuntimeConfig::detect_with(mb_per_thread).with_threads(n_threads)
     };
     // Ignore errors — pool may already be initialised (idempotent).
     cfg.apply().ok();
