@@ -1,9 +1,13 @@
 //! Stage 8 — Naive Bayes k-mer taxonomic classifier.
 //!
 //! Implements the Wang et al. 2007 RDP classifier approach:
-//! build a k-mer frequency profile per reference taxon, then
-//! classify queries by maximum posterior probability with bootstrap
-//! confidence estimation.
+//! build a k-mer presence/absence bitset per reference sequence, then
+//! classify queries by maximum shared-kmer count (AND + popcount) with
+//! bootstrap confidence estimation.
+//!
+//! Bitset profiles use 8 KB per reference at k=8 (vs 262 KB for u32 counts),
+//! a 32× reduction that keeps the entire database in L3 cache for realistic
+//! reference set sizes.
 
 use crate::{Dada2Error, Kmer, io::fasta::FastaRecord};
 use rayon::prelude::*;
@@ -57,12 +61,17 @@ impl Default for TaxonomyConfig {
     }
 }
 
-/// Pre-built reference database.
+/// Pre-built reference database using bitset k-mer profiles.
 pub struct TaxonomyDb {
     k: usize,
-    /// Map from taxon label to k-mer count vector.
-    profiles: Vec<(String, Vec<u32>)>,
-    /// Lineage per taxon label.
+    /// Number of u64 words per bitset: `4^k / 64` (rounded up).
+    n_words: usize,
+    /// One label per profile (reference sequence ID).
+    labels: Vec<String>,
+    /// Bitset per profile: `bits[i][word] & (1 << bit)` is set iff k-mer
+    /// `word*64 + bit` appears in reference sequence `i`.
+    bits: Vec<Vec<u64>>,
+    /// Lineage per reference ID.
     lineages: HashMap<String, Vec<String>>,
 }
 
@@ -89,20 +98,22 @@ impl TaxonomyDb {
 
         #[allow(clippy::cast_possible_truncation)]
         let n_kmers = 4usize.pow(cfg.k as u32);
-        let profiles: Vec<(String, Vec<u32>)> = records
+        let n_words = n_kmers.div_ceil(64);
+
+        let (labels, bits): (Vec<_>, Vec<_>) = records
             .par_iter()
             .map(|rec| {
-                let mut counts = vec![0u32; n_kmers];
+                let mut words = vec![0u64; n_words];
                 for kmer in kmers(&rec.seq, cfg.k) {
                     #[allow(clippy::cast_possible_truncation)]
                     let idx = kmer.0 as usize;
-                    counts[idx] = counts[idx].saturating_add(1);
+                    words[idx >> 6] |= 1u64 << (idx & 63);
                 }
-                (rec.id.clone(), counts)
+                (rec.id.clone(), words)
             })
-            .collect();
+            .unzip();
 
-        Ok(Self { k: cfg.k, profiles, lineages: lineages.clone() })
+        Ok(Self { k: cfg.k, n_words, labels, bits, lineages: lineages.clone() })
     }
 
     /// Classify a collection of ASV sequences.
@@ -133,26 +144,35 @@ impl TaxonomyDb {
             lin.and_then(|l| l.get(i)).filter(|s| !s.is_empty()).cloned()
         }
 
+        // Build query bitset once; reuse bootstrap buffer.
         let query_kmers: Vec<Kmer> = kmers(seq, self.k).collect();
-        let best_label: &str = self.best_match(&query_kmers);
+        let query_bits = self.seq_to_bits(seq);
+
+        let best_idx = self.best_match_bits(&query_bits);
+        let best_label = self.labels[best_idx].as_str();
         let best_genus = self.genus_of(best_label);
 
-        // Bootstrap confidence
+        // Bootstrap confidence: resample 1/8 of query k-mers, find best match.
         let mut seed = cfg.seed;
         let n_sub = (query_kmers.len() / 8).max(1);
         let mut genus_hits = 0u32;
+        let mut sub_bits = vec![0u64; self.n_words];
 
         for _rep in 0..N_BOOTSTRAP {
-            // Simple LCG for deterministic subsampling
-            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
-            let subsample: Vec<Kmer> = (0..n_sub)
-                .map(|i| {
-                    #[allow(clippy::cast_possible_truncation)]
-                    let idx = ((seed >> (i % 8)) as usize) % query_kmers.len().max(1);
-                    query_kmers[idx]
-                })
-                .collect();
-            let boot_label: &str = self.best_match(&subsample);
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            // Reset and fill subsample bitset (no Vec allocation per rep).
+            sub_bits.fill(0);
+            for i in 0..n_sub {
+                #[allow(clippy::cast_possible_truncation)]
+                let idx = ((seed >> (i % 8)) as usize) % query_kmers.len().max(1);
+                #[allow(clippy::cast_possible_truncation)]
+                let kmer_id = query_kmers[idx].0 as usize;
+                sub_bits[kmer_id >> 6] |= 1u64 << (kmer_id & 63);
+            }
+            let boot_idx = self.best_match_bits(&sub_bits);
+            let boot_label = self.labels[boot_idx].as_str();
             if self.genus_of(boot_label) == best_genus && best_genus.is_some() {
                 genus_hits += 1;
             }
@@ -175,20 +195,32 @@ impl TaxonomyDb {
         }
     }
 
-    fn best_match<'a>(&'a self, query_kmers: &[Kmer]) -> &'a str {
-        self.profiles
+    /// Score all profiles against `query_bits`; return the index of the best match.
+    fn best_match_bits(&self, query_bits: &[u64]) -> usize {
+        self.bits
             .iter()
             .enumerate()
-            .map(|(idx, (_, counts))| {
-                #[allow(clippy::cast_possible_truncation)]
-                let score: u64 = query_kmers
+            .map(|(i, profile)| {
+                let score: u32 = profile
                     .iter()
-                    .map(|k| u64::from(counts[k.0 as usize]))
+                    .zip(query_bits.iter())
+                    .map(|(a, b)| (a & b).count_ones())
                     .sum();
-                (idx, score)
+                (i, score)
             })
             .max_by_key(|(_, s)| *s)
-            .map_or("", |(idx, _)| self.profiles[idx].0.as_str())
+            .map_or(0, |(i, _)| i)
+    }
+
+    /// Build a k-mer presence bitset for `seq`.
+    fn seq_to_bits(&self, seq: &[u8]) -> Vec<u64> {
+        let mut words = vec![0u64; self.n_words];
+        for kmer in kmers(seq, self.k) {
+            #[allow(clippy::cast_possible_truncation)]
+            let idx = kmer.0 as usize;
+            words[idx >> 6] |= 1u64 << (idx & 63);
+        }
+        words
     }
 
     fn genus_of(&self, label: &str) -> Option<String> {
