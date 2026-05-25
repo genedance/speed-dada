@@ -75,6 +75,39 @@ pub fn read_fastq(path: &Path) -> Result<Vec<FastqRecord>, Dada2Error> {
     Ok(records)
 }
 
+/// Read at most `n` records from a FASTQ file.
+///
+/// Stops streaming as soon as `n` records have been read.
+/// Useful for capping memory when sampling reads for error learning.
+///
+/// # Errors
+/// Returns [`Dada2Error::Io`] or [`Dada2Error::Parse`] on failure.
+pub fn read_fastq_n(path: &Path, n: usize) -> Result<Vec<FastqRecord>, Dada2Error> {
+    use needletail::parse_fastx_file;
+
+    let mut reader = parse_fastx_file(path)
+        .map_err(|e| Dada2Error::Parse(format!("cannot open {}: {e}", path.display())))?;
+
+    let mut records = Vec::with_capacity(n.min(65_536));
+    while records.len() < n {
+        match reader.next() {
+            None => break,
+            Some(rec) => {
+                let rec = rec.map_err(|e| Dada2Error::Parse(e.to_string()))?;
+                let id = std::str::from_utf8(rec.id())
+                    .map_err(|e| Dada2Error::Parse(e.to_string()))?
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_owned();
+                records.push(FastqRecord { id, seq: rec.seq().to_vec(),
+                    qual: rec.qual().map(<[u8]>::to_vec).unwrap_or_default() });
+            }
+        }
+    }
+    Ok(records)
+}
+
 /// Write records to a FASTQ file.
 ///
 /// # Errors

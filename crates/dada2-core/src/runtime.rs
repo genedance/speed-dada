@@ -54,6 +54,17 @@ impl RuntimeConfig {
             .num_threads(self.n_threads)
             .build_global()
     }
+
+    /// Split a total read budget evenly across `n_files` for error learning.
+    ///
+    /// Returns how many reads to sample from each file so that the total stays
+    /// at most `n_reads`, with a floor of `min_per_file` to ensure statistical
+    /// validity of the error model.
+    #[must_use]
+    pub fn reads_per_file(n_reads: usize, n_files: usize, min_per_file: usize) -> usize {
+        if n_files == 0 { return n_reads; }
+        (n_reads / n_files).max(min_per_file)
+    }
 }
 
 impl Default for RuntimeConfig {

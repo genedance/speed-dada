@@ -12,7 +12,7 @@ use functions::{
     assign_taxonomy_py, configure_runtime_py, dada_pooled_py, dada_py, derep_fastq_py,
     filter_and_trim_paired_py, filter_and_trim_py, init_logging_py, learn_errors_py,
     make_sequence_table_py, merge_pairs_py, quality_profile_py, remove_bimera_denovo_py,
-    run_pipeline_py, trim_primers_py, version,
+    run_pipeline_py, run_pipeline_samples_py, trim_primers_py, version,
 };
 use types::{
     PyDadaResult, PyErrorModel, PyFilterConfig, PyFilterStats, PyFilterStatsPaired,
@@ -39,6 +39,7 @@ fn dada2(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(remove_bimera_denovo_py, m)?)?;
     m.add_function(wrap_pyfunction!(assign_taxonomy_py, m)?)?;
     m.add_function(wrap_pyfunction!(run_pipeline_py, m)?)?;
+    m.add_function(wrap_pyfunction!(run_pipeline_samples_py, m)?)?;
 
     m.add_class::<PyFilterConfig>()?;
     m.add_class::<PyFilterStats>()?;

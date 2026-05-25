@@ -20,13 +20,18 @@ fn lcg(seed: &mut u64) -> u64 {
 
 fn random_seq(len: usize, seed: &mut u64) -> Vec<u8> {
     let bases = b"ACGT";
+    #[allow(clippy::cast_possible_truncation)]
     (0..len).map(|_| bases[(lcg(seed) as usize) % 4]).collect()
 }
 
 fn make_asvs(n: usize, seq_len: usize, seed: u64) -> Vec<Asv> {
     let mut s = seed;
     (0..n)
-        .map(|i| Asv { sequence: random_seq(seq_len, &mut s), abundance: (100 - i as u32).max(1) })
+        .map(|i| Asv {
+            sequence: random_seq(seq_len, &mut s),
+            #[allow(clippy::cast_possible_truncation)]
+            abundance: (100u32.saturating_sub(i as u32)).max(1),
+        })
         .collect()
 }
 
@@ -38,9 +43,11 @@ fn make_fastq_records(n: usize, seq_len: usize, error_rate: f64, seed: u64) -> V
             let mut seq = true_seq.clone();
             let mut qual = vec![b'I'; seq_len];
             for j in 0..seq_len {
-                let p = (lcg(&mut s) >> 33) as f64 / u32::MAX as f64;
+                #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+                let p = (lcg(&mut s) >> 33) as f64 / f64::from(u32::MAX);
                 if p < error_rate {
-                    seq[j] = b"ACGT"[(lcg(&mut s) as usize) % 4];
+                    #[allow(clippy::cast_possible_truncation)]
+                    { seq[j] = b"ACGT"[(lcg(&mut s) as usize) % 4]; }
                     qual[j] = b'5';
                 }
             }
