@@ -214,6 +214,7 @@ dependencies = [
  "dada2-core",
  "env_logger",
  "pyo3",
+ "rayon",
  "serde_json",
 ]
 

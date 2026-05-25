@@ -225,12 +225,14 @@ pub fn dada_pooled(
 
 /// Precompute per-position log-probability table for a single unique sequence.
 ///
-/// `result[i][tb]` = log P(u.seq[i] | true_base=tb, mean_qual_at_i).
+/// `result[i][tb]` = log P(u.seq[i] | `true_base=tb`, `mean_qual_at_i`).
 fn precompute_logp(u: &UniqueSeq, em: &ErrorModel) -> Vec<[f64; 4]> {
     (0..u.seq.len())
         .map(|i| {
             let ob = base_index(u.seq[i]);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let q = Phred(u.mean_qual(i) as u8);
+            #[allow(clippy::cast_possible_truncation)]
             std::array::from_fn(|tb| em.log_p_error(tb as u8, ob, q))
         })
         .collect()
@@ -256,7 +258,7 @@ fn best_centre(logp: &[[f64; 4]], centres: &[Vec<u8>]) -> usize {
 
 /// Poisson abundance significance test working entirely in log-space.
 ///
-/// Returns `true` if P(X ≥ count | Poisson(exp(log_lambda))) < `omega_a`.
+/// Returns `true` if P(X ≥ count | `Poisson(exp(log_lambda))`) < `omega_a`.
 fn is_significant_log(count: u64, log_lambda: f64, omega_a: f64) -> bool {
     if count == 0 {
         return false;

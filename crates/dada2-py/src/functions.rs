@@ -1,4 +1,7 @@
 //! PyO3 pipeline function bindings for dada2-core.
+// PyO3 functions returning PyResult document errors through Python exceptions,
+// not Rust doc-sections; and PyO3 macros consume return values automatically.
+#![allow(clippy::missing_errors_doc, clippy::must_use_candidate)]
 
 use crate::types::{
     PyDadaResult, PyErrorModel, PyFilterConfig, PyFilterStats, PyFilterStatsPaired,
@@ -14,16 +17,43 @@ use dada2_core::{
     merge::{merge_pairs, MergeConfig},
     primer::{trim_primers, PrimerConfig},
     quality_profile::quality_profile,
+    runtime::RuntimeConfig,
     sequence_table::SequenceTable,
     taxonomy::{assign_taxonomy, load_lineage_tsv, TaxonomyConfig},
 };
 use pyo3::prelude::*;
+use rayon::prelude::*;
 use std::{collections::HashMap, path::Path, path::PathBuf};
 
 /// Return the crate version string.
 #[pyfunction]
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+/// Configure the rayon thread pool based on available hardware.
+///
+/// Parameters
+/// ----------
+/// n_threads : int, optional
+///     Override the number of worker threads. 0 means auto-detect.
+///
+/// Returns
+/// -------
+/// tuple[int, int | None]
+///     ``(n_threads_configured, available_ram_mb)``
+#[pyfunction]
+#[pyo3(name = "configure_runtime")]
+#[pyo3(signature = (n_threads = 0))]
+pub fn configure_runtime_py(n_threads: usize) -> (usize, Option<u64>) {
+    let cfg = if n_threads == 0 {
+        RuntimeConfig::detect()
+    } else {
+        RuntimeConfig::detect().with_threads(n_threads)
+    };
+    // Ignore errors — pool may already be initialised (idempotent).
+    cfg.apply().ok();
+    (cfg.n_threads, cfg.mem_available_mb)
 }
 
 /// Build a sequence table from per-sample DADA results.
@@ -493,31 +523,39 @@ pub fn run_pipeline_py(
 
             let filter_cfg = FilterConfig { trunc_len, max_ee, ..Default::default() };
 
-            let mut filtered_paths: Vec<PathBuf> = Vec::with_capacity(input_paths.len());
-            for (i, inp) in input_paths.iter().enumerate() {
-                let out = out_dir_path.join(format!("filtered_{i}.fastq"));
-                filter_and_trim(&filter_cfg, Path::new(inp), &out)?;
-                filtered_paths.push(out);
-            }
+            // Filter samples in parallel.
+            let filtered_paths: Vec<PathBuf> = input_paths
+                .par_iter()
+                .enumerate()
+                .map(|(i, inp)| -> Result<PathBuf, dada2_core::Dada2Error> {
+                    let out = out_dir_path.join(format!("filtered_{i}.fastq"));
+                    filter_and_trim(&filter_cfg, Path::new(inp), &out)?;
+                    Ok(out)
+                })
+                .collect::<Result<_, _>>()?;
 
+            // Read all filtered reads for error learning (I/O-bound, keep serial).
             let mut all_records = Vec::new();
             for path in &filtered_paths {
-                let recs = read_fastq(path)?;
-                all_records.extend(recs);
+                all_records.extend(read_fastq(path)?);
             }
             let em_cfg = ErrorLearningConfig::default();
             let error_model = learn_errors(&all_records, &em_cfg)?;
 
+            // Dereplicate and denoise each sample in parallel.
             let dada_cfg = DadaConfig { omega_a, ..Default::default() };
-            let mut all_asvs: Vec<(Vec<u8>, u32)> = Vec::new();
-            for path in &filtered_paths {
-                let records = read_fastq(path)?;
-                let uniques = derep_fastq(&records)?;
-                let asvs = dada(&uniques, &error_model, &dada_cfg)?;
-                for asv in asvs {
-                    all_asvs.push((asv.sequence, asv.abundance));
-                }
-            }
+            let all_asvs: Vec<(Vec<u8>, u32)> = filtered_paths
+                .par_iter()
+                .map(|path| -> Result<Vec<(Vec<u8>, u32)>, dada2_core::Dada2Error> {
+                    let records = read_fastq(path)?;
+                    let uniques = derep_fastq(&records)?;
+                    let asvs = dada(&uniques, &error_model, &dada_cfg)?;
+                    Ok(asvs.into_iter().map(|a| (a.sequence, a.abundance)).collect())
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .collect();
 
             let clean = remove_bimera_denovo(&all_asvs)?;
 

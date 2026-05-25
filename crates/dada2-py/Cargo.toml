@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3.workspace       = true
+rayon.workspace      = true
 dada2-core.workspace = true
 serde_json.workspace = true
 env_logger.workspace = true

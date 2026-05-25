@@ -90,7 +90,7 @@ impl TaxonomyDb {
         #[allow(clippy::cast_possible_truncation)]
         let n_kmers = 4usize.pow(cfg.k as u32);
         let profiles: Vec<(String, Vec<u32>)> = records
-            .iter()
+            .par_iter()
             .map(|rec| {
                 let mut counts = vec![0u32; n_kmers];
                 for kmer in kmers(&rec.seq, cfg.k) {
@@ -188,8 +188,7 @@ impl TaxonomyDb {
                 (idx, score)
             })
             .max_by_key(|(_, s)| *s)
-            .map(|(idx, _)| self.profiles[idx].0.as_str())
-            .unwrap_or("")
+            .map_or("", |(idx, _)| self.profiles[idx].0.as_str())
     }
 
     fn genus_of(&self, label: &str) -> Option<String> {

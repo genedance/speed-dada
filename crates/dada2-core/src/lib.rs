@@ -24,6 +24,7 @@ pub mod merge;
 pub mod pool;
 pub mod primer;
 pub mod quality_profile;
+pub mod runtime;
 pub mod sequence_table;
 pub mod taxonomy;
 
