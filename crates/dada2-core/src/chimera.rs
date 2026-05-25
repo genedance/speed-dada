@@ -30,7 +30,8 @@ pub fn remove_bimera_denovo(
     sorted.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     // Compute keep/reject in parallel; collect as booleans to preserve sorted order
-    // without a second sort pass.
+    // without a second sort pass.  Pass the sorted slice directly so is_bimera
+    // can filter parents inline — no Vec allocation per sequence.
     let keep: Vec<bool> = sorted
         .par_iter()
         .enumerate()
@@ -38,12 +39,7 @@ pub fn remove_bimera_denovo(
             if i == 0 {
                 return true; // most abundant is never a chimera
             }
-            let parents: Vec<&[u8]> = sorted[..i]
-                .iter()
-                .filter(|(_, pa)| *pa > *abund)
-                .map(|(s, _)| s.as_slice())
-                .collect();
-            !is_bimera(seq, &parents)
+            !is_bimera(seq, &sorted, i, *abund)
         })
         .collect();
 
@@ -58,14 +54,28 @@ pub fn remove_bimera_denovo(
     Ok(out)
 }
 
-/// Return `true` if `candidate` is a bimera of any pair in `parents`.
-fn is_bimera(candidate: &[u8], parents: &[&[u8]]) -> bool {
-    for i in 0..parents.len() {
-        for j in 0..parents.len() {
+/// Return `true` if `candidate` is a bimera of any pair from `sorted[..limit]`
+/// where both parents have abundance strictly greater than `min_abund`.
+///
+/// Operates directly on the sorted slice to avoid per-sequence Vec allocations.
+fn is_bimera(
+    candidate: &[u8],
+    sorted: &[(Vec<u8>, u32)],
+    limit: usize,
+    min_abund: u32,
+) -> bool {
+    for i in 0..limit {
+        if sorted[i].1 <= min_abund {
+            continue;
+        }
+        for j in 0..limit {
             if i == j {
                 continue;
             }
-            if check_bimera_pair(candidate, parents[i], parents[j]) {
+            if sorted[j].1 <= min_abund {
+                continue;
+            }
+            if check_bimera_pair(candidate, &sorted[i].0, &sorted[j].0) {
                 return true;
             }
         }
