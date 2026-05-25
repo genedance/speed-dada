@@ -9,7 +9,7 @@ use crate::{derep::UniqueSeq, Dada2Error};
 use std::{
     collections::BTreeMap,
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{BufReader, BufWriter, Write},
     path::PathBuf,
 };
 
@@ -80,18 +80,18 @@ impl PoolStore {
         Ok(())
     }
 
-    /// Flush the current in-memory index to a chunk file.
+    /// Flush the current in-memory index to a binary chunk file.
     fn flush_chunk(&mut self) -> Result<(), Dada2Error> {
         if self.mem.is_empty() {
             return Ok(());
         }
-        let chunk_path = self.dir.path().join(format!("chunk_{}.jsonl", self.chunks.len()));
-        let mut f = std::io::BufWriter::new(fs::File::create(&chunk_path)?);
+        let chunk_path = self.dir.path().join(format!("chunk_{}.bin", self.chunks.len()));
+        let mut f = BufWriter::new(fs::File::create(&chunk_path)?);
         for (seq, entry) in &self.mem {
-            let line = serde_json::to_string(&(seq, entry))
+            bincode::serialize_into(&mut f, &(seq, entry))
                 .map_err(|e| Dada2Error::Parse(e.to_string()))?;
-            writeln!(f, "{line}")?;
         }
+        f.flush()?;
         self.chunks.push(chunk_path);
         self.mem.clear();
         Ok(())
@@ -110,21 +110,30 @@ impl PoolStore {
         let mut merged: BTreeMap<Vec<u8>, PoolEntry> = BTreeMap::new();
 
         for chunk_path in &self.chunks {
-            let f = BufReader::new(fs::File::open(chunk_path)?);
-            for line in f.lines() {
-                let line = line?;
-                let (seq, entry): (Vec<u8>, PoolEntry) = serde_json::from_str(&line)
-                    .map_err(|e| Dada2Error::Parse(e.to_string()))?;
-                let m = merged.entry(seq).or_insert_with(|| PoolEntry {
-                    total_count: 0,
-                    per_sample: Vec::new(),
-                    qual_sum: entry.qual_sum.clone(),
-                });
-                m.total_count += entry.total_count;
-                m.per_sample.extend_from_slice(&entry.per_sample);
-                for (i, &q) in entry.qual_sum.iter().enumerate() {
-                    if i < m.qual_sum.len() {
-                        m.qual_sum[i] += q;
+            let mut f = BufReader::new(fs::File::open(chunk_path)?);
+            loop {
+                match bincode::deserialize_from::<_, (Vec<u8>, PoolEntry)>(&mut f) {
+                    Ok((seq, entry)) => {
+                        let m = merged.entry(seq).or_insert_with(|| PoolEntry {
+                            total_count: 0,
+                            per_sample: Vec::new(),
+                            qual_sum: entry.qual_sum.clone(),
+                        });
+                        m.total_count += entry.total_count;
+                        m.per_sample.extend_from_slice(&entry.per_sample);
+                        for (i, &q) in entry.qual_sum.iter().enumerate() {
+                            if i < m.qual_sum.len() {
+                                m.qual_sum[i] += q;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if let bincode::ErrorKind::Io(ref io_err) = *e {
+                            if io_err.kind() == std::io::ErrorKind::UnexpectedEof {
+                                break;
+                            }
+                        }
+                        return Err(Dada2Error::Parse(e.to_string()));
                     }
                 }
             }
