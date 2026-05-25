@@ -49,6 +49,25 @@ Peak RAM usage (same dataset):
 
 The dada2rs overhead over Python (~53 MB) is the R runtime. R dada2's 863 MB comes from holding multiple copies of reads as reference-counted R objects simultaneously; the Rust core allocates once per stage and processes in-place.
 
+### Per-stage micro-benchmarks (Criterion, Raspberry Pi 5 / aarch64, 4 cores)
+
+Measured with `cargo bench --package dada2-core --bench pipeline`.
+
+| Stage | Input | Median time | Throughput |
+|---|---|---|---|
+| `merge_pairs` | 10 fwd × 10 rev ASVs | 335 µs | 326 K pairs/s |
+| `merge_pairs` | 30 × 30 | 2.43 ms | 414 K pairs/s |
+| `merge_pairs` | 60 × 60 | 9.06 ms | 436 K pairs/s |
+| `taxonomy_build` | 50 reference sequences | 2.96 ms | 17 K refs/s |
+| `taxonomy_build` | 200 references | 12.5 ms | 16 K refs/s |
+| `taxonomy_build` | 500 references | 30.6 ms | 16 K refs/s |
+| `taxonomy_classify` | 10 query sequences | 1.77 ms | 5.6 K q/s |
+| `taxonomy_classify` | 200 queries | 30.2 ms | 6.6 K q/s |
+| `dada_denoise` | 200 reads | 2.3 ms | 86 K reads/s |
+| `dada_denoise` | 1 000 reads | 19.8 ms | 51 K reads/s |
+
+Peak RSS across the full benchmark run: **132 MiB**. CPU saturates to **96% busy** (4% idle) during parallel sections — all 4 cores active. `merge_pairs` throughput improves with larger batches (326 → 436 K pairs/s) as rayon thread-dispatch overhead is amortised over more work.
+
 ---
 
 ## Project layout
@@ -202,6 +221,10 @@ import dada2
 
 dada2.__version__        # "0.1.0"
 dada2.init_logging()     # enable Rust-level log output (default level: "info")
+
+# Auto-detect optimal thread count from available cores and RAM
+n_threads, ram_mb = dada2.configure_runtime()   # returns (4, 6959) on RPi5
+# Override: dada2.configure_runtime(n_threads=2)
 ```
 
 ### Classes
@@ -450,9 +473,16 @@ Every CPU-bound Python function calls `py.allow_threads(|| { … })` before ente
 ### SIMD alignment (`align.rs`)
 `hamming_distance`, `first_mismatch`, and `range_equal` are scalar loops that LLVM reliably auto-vectorises to AVX2 / NEON when compiled with `target-cpu=native`. `chimera.rs`, `merge.rs`, and `primer.rs` delegate to these primitives.
 
-### Rayon parallelism
+### Rayon parallelism and hardware-aware configuration
+`RuntimeConfig::detect()` (exposed as `dada2.configure_runtime()` in Python) reads `available_parallelism()` for the CPU count and `MemAvailable` from `/proc/meminfo` to cap the rayon thread count at `min(n_cpu, ram_mb / 256)`. This prevents OOM on memory-constrained machines while using all cores when RAM is ample. The config is applied via `rayon::ThreadPoolBuilder::build_global()` at startup.
+
+- **Pipeline level:** `run_pipeline` filters all input samples in parallel, then dereplicates and denoises each sample in parallel.
 - **Sample level:** `filter_and_trim_many` and `filter_and_trim_paired_many` process N FASTQ pairs across the Rayon thread pool.
 - **Intra-sample:** DADA re-assignment, chimera candidate scan, taxonomy classification, and pooled sample ingestion all use `par_iter()`.
+- **Paired-end merging:** the O(n×m) fwd × rev ASV pair loop runs as `fwd_asvs.par_iter().flat_map(...)`.
+- **Taxonomy database build:** reference k-mer profile construction uses `records.par_iter()`.
+
+LLVM auto-vectorises `hamming_distance` and related loops to AVX2 (x86-64) or NEON (AArch64) when compiled with `target-cpu=native` (set in `.cargo/config.toml`).
 
 ### Type safety
 Domain primitives are newtypes — `Phred(u8)` and `Kmer(u64)` — preventing argument-order bugs. All errors propagate via `Dada2Error` (thiserror); no `.unwrap()` or `.expect()` in library code.
@@ -465,7 +495,7 @@ Domain primitives are newtypes — `Phred(u8)` and `Kmer(u64)` — preventing ar
 
 ```bash
 cargo test --workspace
-# 25 unit tests (across 11 modules) + 1 integration test
+# 27 unit tests (across 12 modules) + 1 integration test
 # Integration: 1 000 synthetic reads, 2 % errors → top ASV ≥ 95 % identity
 ```
 
@@ -491,6 +521,11 @@ python tests/parity/compare_r_output.py rust_output.json
 ### Benchmarks
 
 ```bash
+# Criterion micro-benchmarks (merge, taxonomy build/classify, dada denoise)
+cargo bench --package dada2-core --bench pipeline
+# HTML reports written to target/criterion/
+
+# Full pipeline comparison vs R dada2
 # 1. Generate simulated 16S V3-V4 paired FASTQs (10 000 read pairs, 10 true ASVs)
 python benchmarks/sim_fastq.py
 # → /tmp/bench_fastq/R1.fastq, /tmp/bench_fastq/R2.fastq
