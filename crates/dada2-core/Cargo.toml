@@ -17,7 +17,12 @@ env_logger.workspace    = true
 tempfile.workspace      = true
 
 [dev-dependencies]
-tempfile.workspace = true
+tempfile.workspace  = true
+criterion.workspace = true
+
+[[bench]]
+name = "pipeline"
+harness = false
 
 [[test]]
 name = "pipeline_test"
