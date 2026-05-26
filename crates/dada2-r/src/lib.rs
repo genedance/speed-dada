@@ -11,8 +11,9 @@ use extendr_api::prelude::*;
 use dada2_core::{
     chimera::remove_bimera_denovo,
     dada::{
-        dada as dada_core, dada_pooled as dada_pooled_core,
-        dada_pseudo as dada_pseudo_core, Asv, DadaConfig,
+        dada as dada_core, dada_many as dada_many_core,
+        dada_pooled as dada_pooled_core, dada_pseudo as dada_pseudo_core,
+        Asv, DadaConfig,
     },
     derep::{derep_fastq, UniqueSeq},
     error_model::{learn_errors, ErrorLearningConfig, ErrorModel},
@@ -205,6 +206,52 @@ fn dada(
         asvs.iter().map(|a| String::from_utf8_lossy(&a.sequence).into_owned()).collect();
     let out_counts: Vec<i32> = asvs.iter().map(|a| a.abundance as i32).collect();
     list!(seqs = out_seqs, counts = out_counts)
+}
+
+// ── 4a. dada_many ───────────────────────────────────────────────────────────
+
+/// Run DADA per-sample across multiple samples, parallelised via Rayon.
+///
+/// Same flat input layout as [`dada_pooled`] / [`dada_pseudo`], but no
+/// cross-sample priors — each sample is denoised independently. This is
+/// what backs `dada2rs::dada(list_of_dereps, pool=FALSE)` so cross-sample
+/// parallelism isn't lost to R's serial `lapply()`.
+#[extendr]
+fn dada_many(
+    sample_idx: Vec<i32>,
+    seqs: Vec<String>,
+    counts: Vec<i32>,
+    n_samples: i32,
+    err: ExternalPtr<RErrorModel>,
+    omega_a: f64,
+) -> List {
+    let n = n_samples as usize;
+    let mut per_sample: Vec<Vec<UniqueSeq>> = (0..n).map(|_| Vec::new()).collect();
+    for ((&si, s), &c) in sample_idx.iter().zip(seqs.iter()).zip(counts.iter()) {
+        let seq = s.as_bytes().to_vec();
+        let len = seq.len();
+        per_sample[si as usize].push(UniqueSeq {
+            seq,
+            count: c as u32,
+            qual_sum: vec![30.0 * f64::from(c); len],
+        });
+    }
+    let refs: Vec<&[UniqueSeq]> = per_sample.iter().map(|v| v.as_slice()).collect();
+    let cfg = DadaConfig { omega_a, pool: false, ..Default::default() };
+    let result = dada_many_core(&refs, &err.0, &cfg)
+        .unwrap_or_else(|e| panic!("dada_many: {e}"));
+
+    let mut out_sample_idx: Vec<i32> = Vec::new();
+    let mut out_seqs: Vec<String> = Vec::new();
+    let mut out_counts: Vec<i32> = Vec::new();
+    for (si, asvs) in result.iter().enumerate() {
+        for a in asvs {
+            out_sample_idx.push(si as i32);
+            out_seqs.push(String::from_utf8_lossy(&a.sequence).into_owned());
+            out_counts.push(a.abundance as i32);
+        }
+    }
+    list!(sample_idx = out_sample_idx, seqs = out_seqs, counts = out_counts)
 }
 
 // ── 4b. dada_pooled ─────────────────────────────────────────────────────────
@@ -435,6 +482,7 @@ extendr_module! {
     fn learnErrors;
     fn derepFastq;
     fn dada;
+    fn dada_many;
     fn dada_pooled;
     fn dada_pseudo;
     fn mergePairs;

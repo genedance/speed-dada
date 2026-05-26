@@ -9,7 +9,7 @@ use crate::types::{
 };
 use dada2_core::{
     chimera::remove_bimera_denovo,
-    dada::{dada, dada_pooled, dada_pseudo, DadaConfig},
+    dada::{dada, dada_many, dada_pooled, dada_pseudo, DadaConfig},
     derep::{derep_fastq, derep_fastq_path},
     error_model::{learn_errors, ErrorLearningConfig},
     filter::{filter_and_trim, filter_and_trim_paired, FilterConfig},
@@ -363,6 +363,53 @@ pub fn dada_pooled_py(
                 converted.iter().map(Vec::as_slice).collect();
             let cfg = DadaConfig { omega_a, ..Default::default() };
             dada_pooled(&refs, &inner_em, &cfg)
+        })
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    Ok(results.into_iter().map(PyDadaResult).collect())
+}
+
+/// Run DADA per-sample for multiple samples, parallelised across Rayon.
+///
+/// Same algorithm as calling :py:func:`dada` once per sample — just runs the
+/// per-sample calls concurrently instead of leaving cross-sample parallelism
+/// unused in a Python for-loop.
+///
+/// Parameters
+/// ----------
+/// samples : list[list[tuple[bytes, int]]]
+/// error_model : ErrorModel
+/// omega_a : float, optional
+///
+/// Returns
+/// -------
+/// list[DadaResult]
+#[pyfunction]
+#[pyo3(name = "dada_many")]
+#[pyo3(signature = (samples, error_model, omega_a = 1e-40))]
+pub fn dada_many_py(
+    py: Python<'_>,
+    samples: Vec<Vec<(Vec<u8>, u32)>>,
+    error_model: &PyErrorModel,
+    omega_a: f64,
+) -> PyResult<Vec<PyDadaResult>> {
+    let inner_em = error_model.0.clone();
+    let results = py
+        .allow_threads(move || {
+            let converted: Vec<Vec<dada2_core::derep::UniqueSeq>> = samples
+                .into_iter()
+                .map(|s| {
+                    s.into_iter()
+                        .map(|(seq, count)| {
+                            let qual_sum = vec![30.0 * f64::from(count); seq.len()];
+                            dada2_core::derep::UniqueSeq { seq, count, qual_sum }
+                        })
+                        .collect()
+                })
+                .collect();
+            let refs: Vec<&[dada2_core::derep::UniqueSeq]> =
+                converted.iter().map(Vec::as_slice).collect();
+            let cfg = DadaConfig { omega_a, ..Default::default() };
+            dada_many(&refs, &inner_em, &cfg)
         })
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
     Ok(results.into_iter().map(PyDadaResult).collect())

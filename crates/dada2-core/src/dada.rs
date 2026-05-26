@@ -93,12 +93,13 @@ pub fn dada_with_priors(
         .map(|u| precompute_logp(u, error_model))
         .collect();
 
-    // Initialise: most-abundant unique seq is the first cluster centre
-    let mut centres: Vec<Vec<u8>> = vec![uniques[0].seq.clone()];
+    // Centres are stored as indices into `uniques` rather than cloned byte
+    // sequences — the i-th cluster centre's sequence is `uniques[centre_idx[i]].seq`.
+    // Avoids ~50 MB of redundant allocations for runs with many ASVs.
+    let mut centre_idx: Vec<usize> = vec![0];
     let mut assignments: Vec<usize> = vec![0usize; uniques.len()];
 
-    // Track which sequences are already centres; maintained incrementally across
-    // all iterations (centres only grow, never shrink).
+    // Track which sequences are already centres; maintained incrementally.
     let mut centre_set: std::collections::HashSet<&[u8]> =
         std::collections::HashSet::from([uniques[0].seq.as_slice()]);
 
@@ -119,23 +120,24 @@ pub fn dada_with_priors(
             // Poisson abundance test (pseudo-pooling pass 2).
             if !priors.is_empty() && priors.contains(u.seq.as_slice()) {
                 centre_set.insert(u.seq.as_slice());
-                centres.push(u.seq.clone());
+                centre_idx.push(u_idx);
                 continue;
             }
-            let ci = best_centre(&logp_table[u_idx], &centres);
-            let log_prob = seq_ll(&logp_table[u_idx], &centres[ci]);
+            let ci = best_centre(&logp_table[u_idx], &centre_idx, uniques);
+            let log_prob =
+                seq_ll(&logp_table[u_idx], &uniques[centre_idx[ci]].seq);
             #[allow(clippy::cast_precision_loss)]
             let log_lambda = (total_reads as f64).ln() + log_prob;
             if is_significant_log(u64::from(u.count), log_lambda, cfg.omega_a) {
                 centre_set.insert(u.seq.as_slice());
-                centres.push(u.seq.clone());
+                centre_idx.push(u_idx);
             }
         }
 
         // Re-assign all uniques to their nearest centre (parallel).
         let new_assignments: Vec<usize> = logp_table
             .par_iter()
-            .map(|logp| best_centre(logp, &centres))
+            .map(|logp| best_centre(logp, &centre_idx, uniques))
             .collect();
 
         // Total log-likelihood (parallel sum).
@@ -144,14 +146,15 @@ pub fn dada_with_priors(
             .zip(new_assignments.par_iter())
             .zip(uniques.par_iter())
             .map(|((logp, &ci), u)| {
-                seq_ll(logp, &centres[ci.min(centres.len() - 1)]) * f64::from(u.count)
+                let safe_ci = ci.min(centre_idx.len() - 1);
+                seq_ll(logp, &uniques[centre_idx[safe_ci]].seq) * f64::from(u.count)
             })
             .sum();
 
         assignments = new_assignments;
 
         let delta = (ll - prev_ll).abs();
-        let n_centres = centres.len();
+        let n_centres = centre_idx.len();
         let max_iter = cfg.max_iter;
         log::info!("dada: iter {iter}/{max_iter}, {n_centres} centres, ΔlogL = {delta:.2e}");
         if delta < cfg.tol {
@@ -160,17 +163,20 @@ pub fn dada_with_priors(
         prev_ll = ll;
     }
 
-    // Collect ASVs using centre indices to avoid cloning sequences more than once.
+    // Collect ASVs by aggregating counts per centre.
     let mut asv_counts: std::collections::HashMap<usize, u32> =
         std::collections::HashMap::new();
     for (u, &ci) in uniques.iter().zip(assignments.iter()) {
-        let ci = ci.min(centres.len() - 1);
+        let ci = ci.min(centre_idx.len() - 1);
         *asv_counts.entry(ci).or_insert(0) += u.count;
     }
 
     let mut asvs: Vec<Asv> = asv_counts
         .into_iter()
-        .map(|(ci, abundance)| Asv { sequence: centres[ci].clone(), abundance })
+        .map(|(ci, abundance)| Asv {
+            sequence: uniques[centre_idx[ci]].seq.clone(),
+            abundance,
+        })
         .collect();
     asvs.sort_unstable_by_key(|a| Reverse(a.abundance));
 
@@ -250,6 +256,26 @@ pub fn dada_pooled(
     Ok(result)
 }
 
+/// Run DADA independently per sample, parallelised across samples via Rayon.
+///
+/// Identical to calling [`dada`] once per sample, but the per-sample calls
+/// run concurrently across the Rayon thread pool. This is what should back
+/// `dada(list_of_dereps, pool=FALSE)` in language bindings — the alternative
+/// (host-language for-loop) leaves cross-sample parallelism unused.
+///
+/// # Errors
+/// Returns [`Dada2Error`] if any per-sample [`dada`] call fails.
+pub fn dada_many(
+    samples: &[&[UniqueSeq]],
+    error_model: &ErrorModel,
+    cfg: &DadaConfig,
+) -> Result<Vec<Vec<Asv>>, Dada2Error> {
+    samples
+        .par_iter()
+        .map(|s| dada(s, error_model, cfg))
+        .collect()
+}
+
 /// Run DADA with pseudo-pooling — Callahan's two-pass cross-sample scheme.
 ///
 /// **Pass 1**: per-sample DADA in parallel (no priors). Collect every ASV
@@ -324,14 +350,47 @@ fn seq_ll(logp: &[[f32; 4]], centre: &[u8]) -> f64 {
         .sum()
 }
 
-/// Return the index of the centre with the highest log-likelihood for `logp`.
-fn best_centre(logp: &[[f32; 4]], centres: &[Vec<u8>]) -> usize {
-    centres
-        .iter()
-        .enumerate()
-        .map(|(i, c)| (i, seq_ll(logp, c)))
-        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-        .map_or(0, |(i, _)| i)
+/// Return the index of the centre (within `centre_idx`) with the highest
+/// log-likelihood for `logp`.
+///
+/// Uses bound-pruning: log-probabilities are `<= 0`, so a partial sum is
+/// a non-increasing upper bound on the final sum. If the running sum drops
+/// below the current best, no subsequent term can recover and the centre
+/// can be safely skipped. This preserves the argmax exactly while cutting
+/// O(centres × seq_len) work — for typical real-data runs centres that
+/// differ from the candidate are pruned within the first ~20-50 positions.
+///
+/// The branch is checked every 16 positions to amortise its cost on tight
+/// inner loops; smaller intervals add per-position branch overhead, larger
+/// ones reduce pruning effectiveness.
+fn best_centre(
+    logp: &[[f32; 4]],
+    centre_idx: &[usize],
+    uniques: &[UniqueSeq],
+) -> usize {
+    debug_assert!(!centre_idx.is_empty());
+    let mut best_ll = seq_ll(logp, &uniques[centre_idx[0]].seq);
+    let mut best_i = 0usize;
+    for (i, &cu) in centre_idx.iter().enumerate().skip(1) {
+        let centre = &uniques[cu].seq;
+        let n = logp.len().min(centre.len());
+        let mut acc = 0.0f64;
+        let mut pruned = false;
+        for pos in 0..n {
+            acc += f64::from(logp[pos][base_index(centre[pos]) as usize]);
+            if (pos & 15) == 15 && acc < best_ll {
+                pruned = true;
+                break;
+            }
+        }
+        // `>=` (not `>`) so we keep the LAST centre on exact ties — matching
+        // the original `centres.iter().max_by(partial_cmp)` semantics.
+        if !pruned && acc >= best_ll {
+            best_ll = acc;
+            best_i = i;
+        }
+    }
+    best_i
 }
 
 /// Poisson abundance significance test working entirely in log-space.
@@ -400,6 +459,54 @@ mod tests {
         assert!(total_s2 > 0, "sample 1 should have non-zero abundance");
         let ratio = f64::from(total_s1) / f64::from(total_s2);
         assert!(ratio > 1.5 && ratio < 2.5, "expected ~2:1 ratio, got {ratio:.2}");
+    }
+
+    /// Reference O(centres × seq_len) implementation — no pruning. Used to
+    /// verify that the pruned `best_centre` returns identical argmax.
+    fn best_centre_exhaustive(
+        logp: &[[f32; 4]],
+        centre_idx: &[usize],
+        uniques: &[UniqueSeq],
+    ) -> usize {
+        centre_idx
+            .iter()
+            .enumerate()
+            .map(|(i, &cu)| (i, seq_ll(logp, &uniques[cu].seq)))
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map_or(0, |(i, _)| i)
+    }
+
+    #[test]
+    fn best_centre_pruning_matches_exhaustive() {
+        // Build a small fixture: 8 candidate centres of length 64 nt + a query.
+        // SplitMix64 — full 64-bit mixing so distinct seeds give distinct byte streams.
+        let bases = b"ACGT";
+        let make_unique = |seed: u64, len: usize| -> UniqueSeq {
+            let mut s = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut v = Vec::with_capacity(len);
+            for _ in 0..len {
+                s = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let mut z = s;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                z ^= z >> 31;
+                v.push(bases[(z as usize) % 4]);
+            }
+            UniqueSeq { seq: v, count: 1, qual_sum: vec![30.0; len] }
+        };
+        let em = ErrorModel::illumina_default();
+        let uniques: Vec<UniqueSeq> =
+            (0..8u64).map(|i| make_unique(i * 100 + 1, 64)).collect();
+        let centre_idx: Vec<usize> = (0..uniques.len()).collect();
+
+        // Try several queries — for each, both implementations must agree.
+        for qseed in 1..=20u64 {
+            let q = make_unique(qseed * 7919, 64);
+            let logp = precompute_logp(&q, &em);
+            let pruned = best_centre(&logp, &centre_idx, &uniques);
+            let exhaustive = best_centre_exhaustive(&logp, &centre_idx, &uniques);
+            assert_eq!(pruned, exhaustive, "argmax mismatch for qseed={qseed}");
+        }
     }
 
     #[test]

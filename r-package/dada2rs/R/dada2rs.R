@@ -140,12 +140,15 @@ dada <- function(derep, err, selfConsist = FALSE, pool = FALSE,
   pool_flag   <- isTRUE(pool)
   pseudo_flag <- identical(pool, "pseudo")
 
-  # ── Cross-sample path (pool=TRUE or "pseudo") ─────────────────────────────
-  # Aggregates uniques across all samples, dispatches to either
-  # wrap__dada_pooled (true pool) or wrap__dada_pseudo (two-pass pseudo),
-  # and re-splits ASVs back to a per-sample list of "dada" objects.
-  if ((pool_flag || pseudo_flag) &&
-      is.list(derep) && !inherits(derep, "derep") && length(derep) >= 2) {
+  # ── Cross-sample multi-sample path ────────────────────────────────────────
+  # Triggered for any list-of-derep input with >=2 samples. Dispatches to one
+  # of three Rust orchestrators (all parallelised across Rayon):
+  #   pool="pseudo" → wrap__dada_pseudo  (two-pass with priors)
+  #   pool=TRUE     → wrap__dada_pooled  (true cross-sample pool)
+  #   pool=FALSE    → wrap__dada_many    (independent per-sample, parallel)
+  # All three flatten the per-sample dereps into parallel vectors and re-split
+  # ASVs back to a per-sample list of "dada" objects.
+  if (is.list(derep) && !inherits(derep, "derep") && length(derep) >= 2) {
     sample_idx <- integer(0)
     seqs       <- character(0)
     counts     <- integer(0)
@@ -158,7 +161,9 @@ dada <- function(derep, err, selfConsist = FALSE, pool = FALSE,
       seqs       <- c(seqs,       names(uniq))
       counts     <- c(counts,     as.integer(uniq))
     }
-    entry <- if (pseudo_flag) "wrap__dada_pseudo" else "wrap__dada_pooled"
+    entry <- if (pseudo_flag)    "wrap__dada_pseudo"
+             else if (pool_flag) "wrap__dada_pooled"
+             else                "wrap__dada_many"
     raw <- .Call(entry,
       as.integer(sample_idx),
       as.character(seqs),
