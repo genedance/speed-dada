@@ -59,6 +59,26 @@ pub fn dada(
     error_model: &ErrorModel,
     cfg: &DadaConfig,
 ) -> Result<Vec<Asv>, Dada2Error> {
+    let empty = std::collections::HashSet::new();
+    dada_with_priors(uniques, error_model, cfg, &empty)
+}
+
+/// Variant of [`dada`] that auto-promotes sequences listed in `priors`,
+/// bypassing the Poisson abundance test (only requires presence in `uniques`).
+///
+/// This is the inner used by [`dada_pseudo`] for the second pass; sequences
+/// that were detected as ASVs in at least one sample become priors for every
+/// sample, allowing rare-but-real ASVs to be recovered consistently across
+/// samples even when their per-sample abundance is below `omega_a`.
+///
+/// # Errors
+/// Returns [`Dada2Error::InvalidInput`] if `uniques` is empty.
+pub fn dada_with_priors(
+    uniques: &[UniqueSeq],
+    error_model: &ErrorModel,
+    cfg: &DadaConfig,
+    priors: &std::collections::HashSet<&[u8]>,
+) -> Result<Vec<Asv>, Dada2Error> {
     if uniques.is_empty() {
         return Err(Dada2Error::InvalidInput("no unique sequences supplied to dada".into()));
     }
@@ -93,6 +113,13 @@ pub fn dada(
         // promoted themselves.
         for (u_idx, u) in uniques.iter().enumerate() {
             if centre_set.contains(u.seq.as_slice()) {
+                continue;
+            }
+            // Prior bypass: cross-sample priors auto-promote without the
+            // Poisson abundance test (pseudo-pooling pass 2).
+            if !priors.is_empty() && priors.contains(u.seq.as_slice()) {
+                centre_set.insert(u.seq.as_slice());
+                centres.push(u.seq.clone());
                 continue;
             }
             let ci = best_centre(&logp_table[u_idx], &centres);
@@ -221,6 +248,54 @@ pub fn dada_pooled(
         .collect();
 
     Ok(result)
+}
+
+/// Run DADA with pseudo-pooling — Callahan's two-pass cross-sample scheme.
+///
+/// **Pass 1**: per-sample DADA in parallel (no priors). Collect every ASV
+/// detected in any sample → `priors` set.
+///
+/// **Pass 2**: per-sample DADA in parallel again, but sequences in `priors`
+/// auto-promote on first encounter (bypass the Poisson `omega_a` test). This
+/// recovers rare-but-real ASVs that occur across multiple samples but would
+/// fail the abundance test in any single sample.
+///
+/// Per-sample passes parallelise across the rayon thread pool — much faster
+/// than the single-threaded greedy promotion of [`dada_pooled`].
+///
+/// # Errors
+/// Returns [`Dada2Error`] if any per-sample [`dada`] call fails.
+pub fn dada_pseudo(
+    samples: &[&[UniqueSeq]],
+    error_model: &ErrorModel,
+    cfg: &DadaConfig,
+) -> Result<Vec<Vec<Asv>>, Dada2Error> {
+    // Pass 1 — per-sample, no priors, run in parallel.
+    let pass1: Vec<Vec<Asv>> = samples
+        .par_iter()
+        .map(|s| dada(s, error_model, cfg))
+        .collect::<Result<_, _>>()?;
+
+    // Union of every ASV across all samples becomes the prior set.
+    let prior_seqs: Vec<Vec<u8>> = {
+        let mut set: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+        for asvs in &pass1 {
+            for a in asvs {
+                set.insert(a.sequence.clone());
+            }
+        }
+        set.into_iter().collect()
+    };
+    let priors_set: std::collections::HashSet<&[u8]> =
+        prior_seqs.iter().map(std::vec::Vec::as_slice).collect();
+
+    // Pass 2 — per-sample with priors, run in parallel.
+    let pass2: Vec<Vec<Asv>> = samples
+        .par_iter()
+        .map(|s| dada_with_priors(s, error_model, cfg, &priors_set))
+        .collect::<Result<_, _>>()?;
+
+    Ok(pass2)
 }
 
 /// Precompute per-position log-probability table for a single unique sequence.

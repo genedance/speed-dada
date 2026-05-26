@@ -3,3 +3,5 @@ r-package/dada2rs/src/*.o
 target/
 
 target/
+# benchmark outputs and logs (generated during runs)
+bench_logs/

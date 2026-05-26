@@ -5,7 +5,7 @@ CARGO          = @CARGO@
 RUST_LIB = $(WORKSPACE_ROOT)/target/release/libdada2_r.a
 
 # Link the static Rust archive plus required system libraries.
-PKG_LIBS   = $(RUST_LIB) -lpthread -ldl -lm -lbz2
+PKG_LIBS   = $(RUST_LIB) -lpthread @DL_LIB@ -lm -lbz2
 PKG_CFLAGS =
 
 all: $(SHLIB)

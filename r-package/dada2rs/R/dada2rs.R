@@ -136,11 +136,50 @@ dada <- function(derep, err, selfConsist = FALSE, pool = FALSE,
   .ignore_multithread(multithread)
   if (!isFALSE(selfConsist))
     warning("dada2rs: selfConsist is not implemented and was ignored")
-  if (identical(pool, "pseudo"))
-    warning("dada2rs: pool='pseudo' is not implemented; using pool=FALSE")
 
-  pool_flag <- isTRUE(pool)
+  pool_flag   <- isTRUE(pool)
+  pseudo_flag <- identical(pool, "pseudo")
 
+  # ── Cross-sample path (pool=TRUE or "pseudo") ─────────────────────────────
+  # Aggregates uniques across all samples, dispatches to either
+  # wrap__dada_pooled (true pool) or wrap__dada_pseudo (two-pass pseudo),
+  # and re-splits ASVs back to a per-sample list of "dada" objects.
+  if ((pool_flag || pseudo_flag) &&
+      is.list(derep) && !inherits(derep, "derep") && length(derep) >= 2) {
+    sample_idx <- integer(0)
+    seqs       <- character(0)
+    counts     <- integer(0)
+    for (i in seq_along(derep)) {
+      d <- derep[[i]]
+      if (!inherits(d, "derep"))
+        stop("dada2rs: each element of derep must be a 'derep' object")
+      uniq <- d$uniques
+      sample_idx <- c(sample_idx, rep.int(i - 1L, length(uniq)))
+      seqs       <- c(seqs,       names(uniq))
+      counts     <- c(counts,     as.integer(uniq))
+    }
+    entry <- if (pseudo_flag) "wrap__dada_pseudo" else "wrap__dada_pooled"
+    raw <- .Call(entry,
+      as.integer(sample_idx),
+      as.character(seqs),
+      as.integer(counts),
+      as.integer(length(derep)),
+      err,
+      as.double(omega_a))
+
+    out <- vector("list", length(derep))
+    names(out) <- if (!is.null(names(derep))) names(derep)
+                  else paste0("Sample", seq_along(derep))
+    for (i in seq_along(derep)) {
+      mask <- raw$sample_idx == (i - 1L)
+      denoised <- as.integer(raw$counts[mask])
+      names(denoised) <- raw$seqs[mask]
+      out[[i]] <- structure(list(denoised = denoised), class = "dada")
+    }
+    return(out)
+  }
+
+  # ── Per-sample path ────────────────────────────────────────────────────────
   run_one <- function(d) {
     if (!inherits(d, "derep")) stop("dada2rs: each element of derep must be a 'derep' object")
     uniq <- d$uniques

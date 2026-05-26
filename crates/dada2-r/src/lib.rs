@@ -10,7 +10,10 @@ use extendr_api::prelude::*;
 
 use dada2_core::{
     chimera::remove_bimera_denovo,
-    dada::{dada as dada_core, Asv, DadaConfig},
+    dada::{
+        dada as dada_core, dada_pooled as dada_pooled_core,
+        dada_pseudo as dada_pseudo_core, Asv, DadaConfig,
+    },
     derep::{derep_fastq, UniqueSeq},
     error_model::{learn_errors, ErrorLearningConfig, ErrorModel},
     filter::{filter_and_trim_many, filter_and_trim_paired_many, FilterConfig},
@@ -204,6 +207,102 @@ fn dada(
     list!(seqs = out_seqs, counts = out_counts)
 }
 
+// ── 4b. dada_pooled ─────────────────────────────────────────────────────────
+
+/// Run DADA denoising on multiple samples with cross-sample pooling.
+///
+/// Inputs are flat parallel vectors covering all samples:
+///   `sample_idx[i]` = which sample the i-th derep entry belongs to (0-based),
+///   `seqs[i]`       = the dereplicated sequence,
+///   `counts[i]`     = its observed count in that sample.
+/// `n_samples` is the total number of samples (output is padded for empty samples).
+///
+/// Returns parallel vectors `(sample_idx, seqs, counts)` of per-sample ASVs
+/// after pooled denoising.
+#[extendr]
+fn dada_pooled(
+    sample_idx: Vec<i32>,
+    seqs: Vec<String>,
+    counts: Vec<i32>,
+    n_samples: i32,
+    err: ExternalPtr<RErrorModel>,
+    omega_a: f64,
+) -> List {
+    let n = n_samples as usize;
+    let mut per_sample: Vec<Vec<UniqueSeq>> = (0..n).map(|_| Vec::new()).collect();
+    for ((&si, s), &c) in sample_idx.iter().zip(seqs.iter()).zip(counts.iter()) {
+        let seq = s.as_bytes().to_vec();
+        let len = seq.len();
+        per_sample[si as usize].push(UniqueSeq {
+            seq,
+            count: c as u32,
+            qual_sum: vec![30.0 * f64::from(c); len],
+        });
+    }
+    let refs: Vec<&[UniqueSeq]> = per_sample.iter().map(|v| v.as_slice()).collect();
+    let cfg = DadaConfig { omega_a, pool: true, ..Default::default() };
+    let result = dada_pooled_core(&refs, &err.0, &cfg)
+        .unwrap_or_else(|e| panic!("dada_pooled: {e}"));
+
+    let mut out_sample_idx: Vec<i32> = Vec::new();
+    let mut out_seqs: Vec<String> = Vec::new();
+    let mut out_counts: Vec<i32> = Vec::new();
+    for (si, asvs) in result.iter().enumerate() {
+        for a in asvs {
+            out_sample_idx.push(si as i32);
+            out_seqs.push(String::from_utf8_lossy(&a.sequence).into_owned());
+            out_counts.push(a.abundance as i32);
+        }
+    }
+    list!(sample_idx = out_sample_idx, seqs = out_seqs, counts = out_counts)
+}
+
+// ── 4c. dada_pseudo ─────────────────────────────────────────────────────────
+
+/// Run DADA with two-pass pseudo-pooling across samples.
+///
+/// Same flat input layout as [`dada_pooled`]: parallel `sample_idx` / `seqs` /
+/// `counts` vectors, with `n_samples` giving total sample count. Internally
+/// runs per-sample DADA in parallel, collects ASV priors, then re-runs
+/// per-sample DADA in parallel with the priors auto-promoting.
+#[extendr]
+fn dada_pseudo(
+    sample_idx: Vec<i32>,
+    seqs: Vec<String>,
+    counts: Vec<i32>,
+    n_samples: i32,
+    err: ExternalPtr<RErrorModel>,
+    omega_a: f64,
+) -> List {
+    let n = n_samples as usize;
+    let mut per_sample: Vec<Vec<UniqueSeq>> = (0..n).map(|_| Vec::new()).collect();
+    for ((&si, s), &c) in sample_idx.iter().zip(seqs.iter()).zip(counts.iter()) {
+        let seq = s.as_bytes().to_vec();
+        let len = seq.len();
+        per_sample[si as usize].push(UniqueSeq {
+            seq,
+            count: c as u32,
+            qual_sum: vec![30.0 * f64::from(c); len],
+        });
+    }
+    let refs: Vec<&[UniqueSeq]> = per_sample.iter().map(|v| v.as_slice()).collect();
+    let cfg = DadaConfig { omega_a, pool: false, ..Default::default() };
+    let result = dada_pseudo_core(&refs, &err.0, &cfg)
+        .unwrap_or_else(|e| panic!("dada_pseudo: {e}"));
+
+    let mut out_sample_idx: Vec<i32> = Vec::new();
+    let mut out_seqs: Vec<String> = Vec::new();
+    let mut out_counts: Vec<i32> = Vec::new();
+    for (si, asvs) in result.iter().enumerate() {
+        for a in asvs {
+            out_sample_idx.push(si as i32);
+            out_seqs.push(String::from_utf8_lossy(&a.sequence).into_owned());
+            out_counts.push(a.abundance as i32);
+        }
+    }
+    list!(sample_idx = out_sample_idx, seqs = out_seqs, counts = out_counts)
+}
+
 // ── 5. mergePairs ────────────────────────────────────────────────────────────
 
 /// Merge paired-end ASVs.
@@ -336,6 +435,8 @@ extendr_module! {
     fn learnErrors;
     fn derepFastq;
     fn dada;
+    fn dada_pooled;
+    fn dada_pseudo;
     fn mergePairs;
     fn makeSequenceTable;
     fn removeBimeraDenovo;
