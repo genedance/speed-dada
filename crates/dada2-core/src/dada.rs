@@ -95,8 +95,11 @@ pub fn dada_with_priors(
 
     // Centres are stored as indices into `uniques` rather than cloned byte
     // sequences — the i-th cluster centre's sequence is `uniques[centre_idx[i]].seq`.
-    // Avoids ~50 MB of redundant allocations for runs with many ASVs.
+    // We also maintain `centre_packed[i]` — the centre's bases as 2-bit
+    // indices — so the scoring hot path can skip the per-position
+    // `base_index` match.
     let mut centre_idx: Vec<usize> = vec![0];
+    let mut centre_packed: Vec<Vec<u8>> = vec![pack_seq(&uniques[0].seq)];
     let mut assignments: Vec<usize> = vec![0usize; uniques.len()];
 
     // Track which sequences are already centres; maintained incrementally.
@@ -122,24 +125,30 @@ pub fn dada_with_priors(
             if !priors.is_empty() && priors.contains(u.seq.as_slice()) {
                 centre_set.insert(u.seq.as_slice());
                 centre_idx.push(u_idx);
+                centre_packed.push(pack_seq(&u.seq));
                 continue;
             }
-            let ci = best_centre(&logp_table[u_idx], &centre_idx, uniques);
-            let log_prob =
-                seq_ll(&logp_table[u_idx], &uniques[centre_idx[ci]].seq);
+            // best_centre_for_promotion returns both the winning index AND
+            // its log-likelihood — avoiding the redundant seq_ll call that
+            // the previous version did to feed the significance test.
+            let (_, log_prob) = best_centre_for_promotion(&logp_table[u_idx], &centre_packed);
             #[allow(clippy::cast_precision_loss)]
             let log_lambda = (total_reads as f64).ln() + log_prob;
             if is_significant_log(u64::from(u.count), log_lambda, cfg.omega_a) {
                 centre_set.insert(u.seq.as_slice());
                 centre_idx.push(u_idx);
+                centre_packed.push(pack_seq(&u.seq));
             }
         }
         let n_centres_added = centre_idx.len() - n_centres_before;
 
-        // Re-assign all uniques to their nearest centre (parallel).
+        // Re-assign all uniques to their nearest centre. Outer par_iter over
+        // uniques already saturates the thread pool, so each per-unique
+        // best_centre call uses the SERIAL bound-pruned path — nested
+        // rayon parallelism would cost more in fork overhead than it saves.
         let new_assignments: Vec<usize> = logp_table
             .par_iter()
-            .map(|logp| best_centre(logp, &centre_idx, uniques))
+            .map(|logp| best_centre_serial_packed(logp, &centre_packed).0)
             .collect();
 
         // Total log-likelihood (parallel sum).
@@ -148,8 +157,8 @@ pub fn dada_with_priors(
             .zip(new_assignments.par_iter())
             .zip(uniques.par_iter())
             .map(|((logp, &ci), u)| {
-                let safe_ci = ci.min(centre_idx.len() - 1);
-                seq_ll(logp, &uniques[centre_idx[safe_ci]].seq) * f64::from(u.count)
+                let safe_ci = ci.min(centre_packed.len() - 1);
+                seq_ll_packed(logp, &centre_packed[safe_ci]) * f64::from(u.count)
             })
             .sum();
 
@@ -351,57 +360,70 @@ fn precompute_logp(u: &UniqueSeq, em: &ErrorModel) -> Vec<[f32; 4]> {
         .collect()
 }
 
-/// Log-likelihood of unique `logp` given `centre` — pure table lookups, no transcendentals.
-/// Upcasts f32 entries to f64 before accumulating to preserve sum precision.
-fn seq_ll(logp: &[[f32; 4]], centre: &[u8]) -> f64 {
+/// Pack a sequence's bytes to 2-bit base indices (0=A, 1=C, 2=G, 3=T, N→0).
+///
+/// Done once per centre when it's promoted; subsequent scoring iterates the
+/// packed array directly, skipping the per-position `base_index` match.
+fn pack_seq(seq: &[u8]) -> Vec<u8> {
+    seq.iter().map(|&b| base_index(b)).collect()
+}
+
+/// Log-likelihood of `logp` against a pre-packed centre (values 0-3 per pos).
+///
+/// Pure table indexing — no `base_index` match in the inner loop. Upcasts
+/// f32 entries to f64 before accumulating to preserve sum precision.
+fn seq_ll_packed(logp: &[[f32; 4]], packed: &[u8]) -> f64 {
     logp.iter()
-        .zip(centre.iter())
-        .map(|(lp, &cb)| f64::from(lp[base_index(cb) as usize]))
+        .zip(packed.iter())
+        .map(|(lp, &p)| f64::from(lp[p as usize]))
         .sum()
 }
 
-/// Centre count above which `best_centre` fans out across rayon threads.
-/// Below this, the serial bound-pruning path has lower overhead.
-const BEST_CENTRE_PAR_THRESHOLD: usize = 64;
+/// Centre count above which `best_centre_for_promotion` fans out across
+/// rayon threads. Higher than the previous threshold (64) because the
+/// per-call work in promotion at K=64 is too small to amortise rayon fork
+/// overhead. At K=256, per-call work is ~256 × ~50 prune-avg positions
+/// ≈ 13 k ops, enough to make fan-out worthwhile.
+const BEST_CENTRE_PAR_THRESHOLD: usize = 256;
 
-/// Return the index of the centre (within `centre_idx`) with the highest
-/// log-likelihood for `logp`.
+/// Return `(argmax_centre_idx, log_likelihood)` for the candidate `logp`
+/// against the current centre set, when called from the SERIAL promotion
+/// loop. All 13 idle cores can fan out across the K centres.
 ///
-/// Dispatches to a serial bound-pruning path for small `centre_idx`, or a
-/// parallel reduce for larger sets. Both preserve the argmax exactly.
-fn best_centre(
+/// Dispatches to a serial bound-pruning path for small K, or a parallel
+/// reduce for large K. Both preserve the argmax exactly.
+fn best_centre_for_promotion(
     logp: &[[f32; 4]],
-    centre_idx: &[usize],
-    uniques: &[UniqueSeq],
-) -> usize {
-    debug_assert!(!centre_idx.is_empty());
-    if centre_idx.len() < BEST_CENTRE_PAR_THRESHOLD {
-        best_centre_serial(logp, centre_idx, uniques)
+    centre_packed: &[Vec<u8>],
+) -> (usize, f64) {
+    debug_assert!(!centre_packed.is_empty());
+    if centre_packed.len() < BEST_CENTRE_PAR_THRESHOLD {
+        best_centre_serial_packed(logp, centre_packed)
     } else {
-        best_centre_parallel(logp, centre_idx, uniques)
+        best_centre_parallel_packed(logp, centre_packed)
     }
 }
 
-/// Bound-pruned serial scan. Used when there are few centres.
+/// Bound-pruned serial scan. Used inside re-assignment (where outer
+/// `par_iter` over uniques already saturates the thread pool) and as the
+/// promotion path for small centre sets.
 ///
 /// Log-probabilities are `<= 0`, so a partial sum is a non-increasing upper
 /// bound on the final sum. If the running sum drops below the current best,
 /// no subsequent term can recover and the centre can be safely skipped.
 /// The branch is checked every 16 positions to amortise its cost.
-fn best_centre_serial(
+fn best_centre_serial_packed(
     logp: &[[f32; 4]],
-    centre_idx: &[usize],
-    uniques: &[UniqueSeq],
-) -> usize {
-    let mut best_ll = seq_ll(logp, &uniques[centre_idx[0]].seq);
+    centre_packed: &[Vec<u8>],
+) -> (usize, f64) {
+    let mut best_ll = seq_ll_packed(logp, &centre_packed[0]);
     let mut best_i = 0usize;
-    for (i, &cu) in centre_idx.iter().enumerate().skip(1) {
-        let centre = &uniques[cu].seq;
-        let n = logp.len().min(centre.len());
+    for (i, packed) in centre_packed.iter().enumerate().skip(1) {
+        let n = logp.len().min(packed.len());
         let mut acc = 0.0f64;
         let mut pruned = false;
         for pos in 0..n {
-            acc += f64::from(logp[pos][base_index(centre[pos]) as usize]);
+            acc += f64::from(logp[pos][packed[pos] as usize]);
             if (pos & 15) == 15 && acc < best_ll {
                 pruned = true;
                 break;
@@ -414,34 +436,32 @@ fn best_centre_serial(
             best_i = i;
         }
     }
-    best_i
+    (best_i, best_ll)
 }
 
-/// Parallel exhaustive scan across the centre set.
+/// Parallel exhaustive scan across centres — used only from the serial
+/// promotion loop when K exceeds [`BEST_CENTRE_PAR_THRESHOLD`].
 ///
-/// Used when `centre_idx.len() >= BEST_CENTRE_PAR_THRESHOLD`. Each rayon
-/// worker computes `seq_ll` for its slice of centres; the reduction picks
-/// the global argmax with the same `>=` tie-break.
+/// Each rayon worker computes `seq_ll` for its slice of centres; the
+/// reduction picks the global argmax with the same `>=` tie-break.
 ///
-/// No cross-thread bound-pruning — each thread sees only its local best.
-/// The trade-off vs the serial pruned scan is: parallel exhaustive wins
-/// when there are enough centres that K · L / N_THREADS · L_remaining_avg
-/// exceeds the pruned-scan cost. Threshold is set empirically.
-fn best_centre_parallel(
+/// MUST NOT be called from inside another `par_iter` (e.g. re-assignment) —
+/// nested rayon parallelism with this granularity costs more in fork
+/// overhead than it saves.
+fn best_centre_parallel_packed(
     logp: &[[f32; 4]],
-    centre_idx: &[usize],
-    uniques: &[UniqueSeq],
-) -> usize {
-    centre_idx
+    centre_packed: &[Vec<u8>],
+) -> (usize, f64) {
+    centre_packed
         .par_iter()
         .enumerate()
-        .map(|(i, &cu)| (i, seq_ll(logp, &uniques[cu].seq)))
+        .map(|(i, packed)| (i, seq_ll_packed(logp, packed)))
         .reduce(
             || (0usize, f64::NEG_INFINITY),
             |a, b| {
                 // `>=` keeps later-indexed centre on ties, matching
-                // best_centre_serial. Rayon reduces left-to-right within
-                // a slice, so the index ordering is deterministic.
+                // best_centre_serial_packed. Rayon reduces left-to-right
+                // within a slice, so index ordering is deterministic.
                 if b.1 >= a.1 {
                     b
                 } else {
@@ -449,7 +469,6 @@ fn best_centre_parallel(
                 }
             },
         )
-        .0
 }
 
 /// Poisson abundance significance test working entirely in log-space.
@@ -521,83 +540,70 @@ mod tests {
     }
 
     /// Reference O(centres × seq_len) implementation — no pruning. Used to
-    /// verify that the pruned `best_centre` returns identical argmax.
-    fn best_centre_exhaustive(
+    /// verify that the pruned `best_centre_serial_packed` returns identical
+    /// argmax + log-likelihood.
+    fn best_centre_exhaustive_packed(
         logp: &[[f32; 4]],
-        centre_idx: &[usize],
-        uniques: &[UniqueSeq],
-    ) -> usize {
-        centre_idx
+        centre_packed: &[Vec<u8>],
+    ) -> (usize, f64) {
+        centre_packed
             .iter()
             .enumerate()
-            .map(|(i, &cu)| (i, seq_ll(logp, &uniques[cu].seq)))
+            .map(|(i, packed)| (i, seq_ll_packed(logp, packed)))
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .map_or(0, |(i, _)| i)
+            .unwrap_or((0, f64::NEG_INFINITY))
+    }
+
+    fn make_unique_seq(seed: u64, len: usize) -> UniqueSeq {
+        // SplitMix64 — full 64-bit mixing so distinct seeds give distinct streams.
+        let bases = b"ACGT";
+        let mut s = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut v = Vec::with_capacity(len);
+        for _ in 0..len {
+            s = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = s;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            v.push(bases[(z as usize) % 4]);
+        }
+        UniqueSeq { seq: v, count: 1, qual_sum: vec![30.0; len] }
     }
 
     #[test]
     fn best_centre_pruning_matches_exhaustive() {
-        // Build a small fixture: 8 candidate centres of length 64 nt + a query.
-        // SplitMix64 — full 64-bit mixing so distinct seeds give distinct byte streams.
-        let bases = b"ACGT";
-        let make_unique = |seed: u64, len: usize| -> UniqueSeq {
-            let mut s = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
-            let mut v = Vec::with_capacity(len);
-            for _ in 0..len {
-                s = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
-                let mut z = s;
-                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-                z ^= z >> 31;
-                v.push(bases[(z as usize) % 4]);
-            }
-            UniqueSeq { seq: v, count: 1, qual_sum: vec![30.0; len] }
-        };
+        // Build a small fixture: 8 candidate centres of length 64 nt + queries.
         let em = ErrorModel::illumina_default();
         let uniques: Vec<UniqueSeq> =
-            (0..8u64).map(|i| make_unique(i * 100 + 1, 64)).collect();
-        let centre_idx: Vec<usize> = (0..uniques.len()).collect();
+            (0..8u64).map(|i| make_unique_seq(i * 100 + 1, 64)).collect();
+        let centre_packed: Vec<Vec<u8>> =
+            uniques.iter().map(|u| pack_seq(&u.seq)).collect();
 
-        // Try several queries — for each, both implementations must agree.
         for qseed in 1..=20u64 {
-            let q = make_unique(qseed * 7919, 64);
+            let q = make_unique_seq(qseed * 7919, 64);
             let logp = precompute_logp(&q, &em);
-            let pruned = best_centre(&logp, &centre_idx, &uniques);
-            let exhaustive = best_centre_exhaustive(&logp, &centre_idx, &uniques);
-            assert_eq!(pruned, exhaustive, "argmax mismatch for qseed={qseed}");
+            let pruned = best_centre_serial_packed(&logp, &centre_packed);
+            let exhaustive = best_centre_exhaustive_packed(&logp, &centre_packed);
+            assert_eq!(pruned, exhaustive, "argmax/ll mismatch for qseed={qseed}");
         }
     }
 
     #[test]
     fn best_centre_parallel_matches_serial() {
-        // Fixture with K = 200 centres > BEST_CENTRE_PAR_THRESHOLD (64), so
-        // best_centre() dispatches to the parallel path. Verify it matches
-        // the serial pruning path on 30 random queries.
-        let bases = b"ACGT";
-        let make_unique = |seed: u64, len: usize| -> UniqueSeq {
-            let mut s = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
-            let mut v = Vec::with_capacity(len);
-            for _ in 0..len {
-                s = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
-                let mut z = s;
-                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-                z ^= z >> 31;
-                v.push(bases[(z as usize) % 4]);
-            }
-            UniqueSeq { seq: v, count: 1, qual_sum: vec![30.0; len] }
-        };
+        // Fixture with K = 300 centres > BEST_CENTRE_PAR_THRESHOLD (256), so
+        // best_centre_for_promotion dispatches to the parallel path.
         let em = ErrorModel::illumina_default();
         let uniques: Vec<UniqueSeq> =
-            (0..200u64).map(|i| make_unique(i * 991 + 13, 64)).collect();
-        let centre_idx: Vec<usize> = (0..uniques.len()).collect();
-        assert!(centre_idx.len() >= BEST_CENTRE_PAR_THRESHOLD);
+            (0..300u64).map(|i| make_unique_seq(i * 991 + 13, 64)).collect();
+        let centre_packed: Vec<Vec<u8>> =
+            uniques.iter().map(|u| pack_seq(&u.seq)).collect();
+        assert!(centre_packed.len() >= BEST_CENTRE_PAR_THRESHOLD);
 
         for qseed in 1..=30u64 {
-            let q = make_unique(qseed * 7919, 64);
+            let q = make_unique_seq(qseed * 7919, 64);
             let logp = precompute_logp(&q, &em);
-            let parallel = best_centre(&logp, &centre_idx, &uniques);
-            let serial = best_centre_serial(&logp, &centre_idx, &uniques);
+            let parallel = best_centre_for_promotion(&logp, &centre_packed);
+            let serial = best_centre_serial_packed(&logp, &centre_packed);
             assert_eq!(parallel, serial, "argmax mismatch at qseed={qseed}");
         }
     }
