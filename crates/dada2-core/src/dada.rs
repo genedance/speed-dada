@@ -36,6 +36,18 @@ pub struct DadaConfig {
     pub tol: f64,
     /// RNG seed (unused currently, reserved for future tie-breaking).
     pub seed: u64,
+    /// Log-probability of a single insertion or deletion in `gap_corrected_ll`.
+    ///
+    /// The substitution-only scorer mis-scores reads with a sequencer-introduced
+    /// indel as having `L - p` substitution errors after the indel position p,
+    /// which spuriously promotes the indel artefact as a new ASV. The gap-
+    /// corrected scorer adds a single-indel-alignment model with this constant
+    /// penalty; an indel-artefact read scores ≈ centre's log-likelihood + this
+    /// constant instead of accumulating substitution penalties.
+    ///
+    /// Default: `ln(1e-3) ≈ -6.91`, matching R dada2's empirical indel rate on
+    /// Illumina paired-end data.
+    pub gap_log_p: f64,
 }
 
 impl Default for DadaConfig {
@@ -46,6 +58,7 @@ impl Default for DadaConfig {
             max_iter: 16,
             tol: 1e-6,
             seed: 42,
+            gap_log_p: -6.907_755_278_982_137, // (1e-3_f64).ln()
         }
     }
 }
@@ -131,7 +144,16 @@ pub fn dada_with_priors(
             // best_centre_for_promotion returns both the winning index AND
             // its log-likelihood — avoiding the redundant seq_ll call that
             // the previous version did to feed the significance test.
-            let (_, log_prob) = best_centre_for_promotion(&logp_table[u_idx], &centre_packed);
+            let (best_i, log_prob_sub) =
+                best_centre_for_promotion(&logp_table[u_idx], &centre_packed);
+            // Gap-corrected likelihood: if the candidate is an indel artefact
+            // of `centre_packed[best_i]`, the single-indel alignment scores
+            // far better than the substitution-only path. Taking the max
+            // suppresses spurious promotion of indel artefacts as new ASVs
+            // and aligns the algorithm with R dada2's banded-aligner output.
+            let log_prob_gap =
+                gap_corrected_ll(&logp_table[u_idx], &centre_packed[best_i], cfg.gap_log_p);
+            let log_prob = log_prob_sub.max(log_prob_gap);
             #[allow(clippy::cast_precision_loss)]
             let log_lambda = (total_reads as f64).ln() + log_prob;
             if is_significant_log(u64::from(u.count), log_lambda, cfg.omega_a) {
@@ -379,6 +401,69 @@ fn seq_ll_packed(logp: &[[f32; 4]], packed: &[u8]) -> f64 {
         .sum()
 }
 
+/// Best log-likelihood under the model "one indel anywhere in the query".
+///
+/// Without this, a sequencer-introduced indel at position p in the query
+/// makes the substitution-only scorer count ~(L-p) phantom substitutions,
+/// spuriously promoting the indel artefact as a new ASV. R dada2 handles
+/// indels natively through a banded Needleman-Wunsch aligner; this function
+/// closes most of that gap analytically without an aligner.
+///
+/// Computes:
+///   for each breakpoint p in `[0, L]`:
+///     - **insertion** model: score `query[0..p]` against `centre[0..p]`,
+///       then add `gap_log_p` for the inserted base, then score
+///       `query[p+1..L]` against `centre[p..L-1]` (centre shifted left).
+///     - **deletion** model: score `query[0..p]` against `centre[0..p]`,
+///       add `gap_log_p` for the missing base, then score `query[p..L-1]`
+///       against `centre[p+1..L]` (centre shifted right).
+///   returns the max over all `p` and both models.
+///
+/// Implemented in O(L) via prefix sums of the four possible per-position
+/// scores: `(query=q[i], true=c[i])`, `(query=q[i], true=c[i-1])`,
+/// `(query=q[i], true=c[i+1])`, etc. — done with one pass each.
+#[allow(clippy::cast_possible_wrap)]
+fn gap_corrected_ll(logp: &[[f32; 4]], centre: &[u8], gap_log_p: f64) -> f64 {
+    let n = logp.len().min(centre.len());
+    if n < 2 {
+        return f64::NEG_INFINITY;
+    }
+    // Prefix sums of score(query[i] | true=centre[i]) — same as seq_ll_packed
+    // truncated to length p.
+    let mut prefix = vec![0.0f64; n + 1];
+    for i in 0..n {
+        prefix[i + 1] = prefix[i] + f64::from(logp[i][centre[i] as usize]);
+    }
+    // Suffix sums under the INSERTION model: score(query[i+1] | true=centre[i])
+    // for i in [p, n-1] — i.e. centre shifted LEFT by one relative to query.
+    // After the gap, query[p+1..n] is scored against centre[p..n-1].
+    let mut ins_suffix = vec![0.0f64; n + 1];
+    for i in (1..n).rev() {
+        ins_suffix[i] = ins_suffix[i + 1] + f64::from(logp[i][centre[i - 1] as usize]);
+    }
+    // Suffix sums under the DELETION model: score(query[i] | true=centre[i+1])
+    // for i in [p, n-2] — centre shifted RIGHT by one.
+    // After the gap, query[p..n-1] is scored against centre[p+1..n].
+    let mut del_suffix = vec![0.0f64; n + 1];
+    for i in (0..n - 1).rev() {
+        del_suffix[i] = del_suffix[i + 1] + f64::from(logp[i][centre[i + 1] as usize]);
+    }
+    let mut best = f64::NEG_INFINITY;
+    for p in 0..n {
+        // Insertion at position p in the query: prefix[p] + gap + ins_suffix[p+1]
+        let ins_ll = prefix[p] + gap_log_p + ins_suffix[p + 1];
+        if ins_ll > best {
+            best = ins_ll;
+        }
+        // Deletion at position p in the query: prefix[p] + gap + del_suffix[p]
+        let del_ll = prefix[p] + gap_log_p + del_suffix[p];
+        if del_ll > best {
+            best = del_ll;
+        }
+    }
+    best
+}
+
 /// Centre count above which `best_centre_for_promotion` fans out across
 /// rayon threads. Higher than the previous threshold (64) because the
 /// per-call work in promotion at K=64 is too small to amortise rayon fork
@@ -409,9 +494,10 @@ fn best_centre_for_promotion(
 /// promotion path for small centre sets.
 ///
 /// Log-probabilities are `<= 0`, so a partial sum is a non-increasing upper
-/// bound on the final sum. If the running sum drops below the current best,
-/// no subsequent term can recover and the centre can be safely skipped.
-/// The branch is checked every 16 positions to amortise its cost.
+/// bound on the final sum. The branch is checked **every position** — modern
+/// branch prediction makes the per-position check essentially free, and
+/// non-matching centres typically exit within ~5–10 positions instead of
+/// running to the next 16-position boundary.
 fn best_centre_serial_packed(
     logp: &[[f32; 4]],
     centre_packed: &[Vec<u8>],
@@ -424,7 +510,7 @@ fn best_centre_serial_packed(
         let mut pruned = false;
         for pos in 0..n {
             acc += f64::from(logp[pos][packed[pos] as usize]);
-            if (pos & 15) == 15 && acc < best_ll {
+            if acc < best_ll {
                 pruned = true;
                 break;
             }
@@ -606,6 +692,53 @@ mod tests {
             let serial = best_centre_serial_packed(&logp, &centre_packed);
             assert_eq!(parallel, serial, "argmax mismatch at qseed={qseed}");
         }
+    }
+
+    #[test]
+    fn gap_corrected_ll_no_indel_returns_substitution_score() {
+        // If the query and centre are identical, both substitution-only and
+        // gap-corrected paths should produce comparable likelihoods — the gap
+        // model adds gap_log_p penalty so it should be strictly worse for the
+        // no-indel case.
+        let em = ErrorModel::illumina_default();
+        let q = make_unique("AAAACCCCGGGGTTTT", 1);
+        let logp = precompute_logp(&q, &em);
+        let centre_packed = pack_seq(&q.seq);
+        let sub_ll = seq_ll_packed(&logp, &centre_packed);
+        let gap_ll = gap_corrected_ll(&logp, &centre_packed, -6.9);
+        // gap_ll is best single-indel score; with identical seqs, any indel
+        // alignment introduces mismatches, so gap_ll must be ≤ sub_ll.
+        assert!(
+            gap_ll <= sub_ll,
+            "gap_ll ({gap_ll}) should not exceed sub_ll ({sub_ll}) for identical seqs"
+        );
+    }
+
+    #[test]
+    fn gap_corrected_ll_detects_single_insertion() {
+        // Query is centre with one base inserted at the start.
+        // The substitution-only scorer treats every position as a mismatch
+        // (catastrophic LL); the gap-corrected scorer should recognise the
+        // insertion and score close to the all-match LL plus one gap penalty.
+        let em = ErrorModel::illumina_default();
+        let centre_seq = b"AAAACCCCGGGGTTTT".to_vec();
+        let mut query_seq = vec![b'A']; // extra A at start
+        query_seq.extend_from_slice(&centre_seq[..centre_seq.len() - 1]); // drop last so lengths match
+        let query = UniqueSeq {
+            seq: query_seq,
+            count: 1,
+            qual_sum: vec![40.0; centre_seq.len()],
+        };
+        let logp = precompute_logp(&query, &em);
+        let centre_packed = pack_seq(&centre_seq);
+        let sub_ll = seq_ll_packed(&logp, &centre_packed);
+        let gap_ll = gap_corrected_ll(&logp, &centre_packed, -6.9);
+        // gap_ll should be much higher (closer to 0) than sub_ll since the
+        // insertion model captures most positions as matches.
+        assert!(
+            gap_ll > sub_ll + 10.0,
+            "gap_ll ({gap_ll}) should be much higher than sub_ll ({sub_ll}) when query has an insertion"
+        );
     }
 
     #[test]

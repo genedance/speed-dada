@@ -25,6 +25,10 @@ criterion.workspace = true
 name = "pipeline"
 harness = false
 
+[[bin]]
+name = "dada2-bench"
+path = "src/bin/dada2_bench.rs"
+
 [[test]]
 name = "pipeline_test"
 path = "../../tests/integration/pipeline_test.rs"
