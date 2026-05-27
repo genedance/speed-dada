@@ -2,6 +2,7 @@
 
 use dada2_core::{
     dada::Asv,
+    derep::UniqueSeq,
     error_model::ErrorModel,
     filter::FilterConfig,
     merge::MergedRead,
@@ -330,5 +331,38 @@ impl PyQualityProfile {
             self.n_reads,
             self.cycle_mean.len()
         )
+    }
+}
+
+// ── DerepResult ──────────────────────────────────────────────────────────────
+
+/// Dereplicated FASTQ result — an opaque, Rust-owned container.
+///
+/// The previous Python representation (`list[tuple[bytes, int]]`) lost the
+/// per-position quality summary that the DADA algorithm uses to estimate
+/// per-base error rates, forcing the dada* functions to fabricate a flat
+/// Phred-30 quality when reconstructing `UniqueSeq` on the Rust side.
+/// `DerepResult` carries the full `Vec<UniqueSeq>` (including `qual_sum`)
+/// across the FFI boundary so denoising uses real quality.
+///
+/// For back-compat, the class is still iterable / indexable as
+/// `(sequence: bytes, abundance: int)` tuples.
+#[pyclass(name = "DerepResult")]
+pub struct PyDerepResult(pub Vec<UniqueSeq>);
+
+#[pymethods]
+impl PyDerepResult {
+    fn __len__(&self) -> usize {
+        self.0.len()
+    }
+    fn __getitem__(&self, i: usize) -> PyResult<(Vec<u8>, u32)> {
+        let u = self
+            .0
+            .get(i)
+            .ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("index out of range"))?;
+        Ok((u.seq.clone(), u.count))
+    }
+    fn __repr__(&self) -> String {
+        format!("DerepResult(n_uniques={})", self.0.len())
     }
 }

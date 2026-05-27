@@ -107,7 +107,11 @@ derepFastq <- function(fls, verbose = FALSE, ...) {
     raw <- .Call("wrap__derepFastq", as.character(path))
     uniq <- as.integer(raw$counts)
     names(uniq) <- raw$seqs
-    structure(list(uniques = uniq, quals = NULL, map = NULL), class = "derep")
+    # `.rust_ptr` carries per-position quality across the FFI for `dada()`.
+    # The user-visible `$uniques` (seq → count) stays for back-compat.
+    structure(list(uniques = uniq, quals = NULL, map = NULL,
+                   .rust_ptr = raw$ptr),
+              class = "derep")
   }
   if (length(fls) == 1L) {
     make_derep(fls)
@@ -141,36 +145,22 @@ dada <- function(derep, err, selfConsist = FALSE, pool = FALSE,
   pseudo_flag <- identical(pool, "pseudo")
 
   # ── Cross-sample multi-sample path ────────────────────────────────────────
-  # Triggered for any list-of-derep input with >=2 samples. Dispatches to one
-  # of three Rust orchestrators (all parallelised across Rayon):
-  #   pool="pseudo" → wrap__dada_pseudo  (two-pass with priors)
-  #   pool=TRUE     → wrap__dada_pooled  (true cross-sample pool)
-  #   pool=FALSE    → wrap__dada_many    (independent per-sample, parallel)
-  # All three flatten the per-sample dereps into parallel vectors and re-split
-  # ASVs back to a per-sample list of "dada" objects.
+  # For >=2 derep inputs the binding now takes a LIST OF EXTERNAL POINTERS
+  # (one per sample), each carrying the full Vec<UniqueSeq> with per-position
+  # quality — fixing a bug where the previous (seq, count)-only flat-vector
+  # protocol dropped quality and forced the Rust core to fake Phred 30.
   if (is.list(derep) && !inherits(derep, "derep") && length(derep) >= 2) {
-    sample_idx <- integer(0)
-    seqs       <- character(0)
-    counts     <- integer(0)
+    ptrs <- vector("list", length(derep))
     for (i in seq_along(derep)) {
       d <- derep[[i]]
-      if (!inherits(d, "derep"))
-        stop("dada2rs: each element of derep must be a 'derep' object")
-      uniq <- d$uniques
-      sample_idx <- c(sample_idx, rep.int(i - 1L, length(uniq)))
-      seqs       <- c(seqs,       names(uniq))
-      counts     <- c(counts,     as.integer(uniq))
+      if (!inherits(d, "derep") || is.null(d$.rust_ptr))
+        stop("dada2rs: each element of derep must be a 'derep' object with a .rust_ptr")
+      ptrs[[i]] <- d$.rust_ptr
     }
     entry <- if (pseudo_flag)    "wrap__dada_pseudo"
              else if (pool_flag) "wrap__dada_pooled"
              else                "wrap__dada_many"
-    raw <- .Call(entry,
-      as.integer(sample_idx),
-      as.character(seqs),
-      as.integer(counts),
-      as.integer(length(derep)),
-      err,
-      as.double(omega_a))
+    raw <- .Call(entry, ptrs, err, as.double(omega_a))
 
     out <- vector("list", length(derep))
     names(out) <- if (!is.null(names(derep))) names(derep)
@@ -184,13 +174,12 @@ dada <- function(derep, err, selfConsist = FALSE, pool = FALSE,
     return(out)
   }
 
-  # ── Per-sample path ────────────────────────────────────────────────────────
+  # ── Single-sample path ────────────────────────────────────────────────────
   run_one <- function(d) {
-    if (!inherits(d, "derep")) stop("dada2rs: each element of derep must be a 'derep' object")
-    uniq <- d$uniques
+    if (!inherits(d, "derep") || is.null(d$.rust_ptr))
+      stop("dada2rs: derep must be a 'derep' object with a .rust_ptr")
     raw <- .Call("wrap__dada",
-      as.character(names(uniq)),
-      as.integer(uniq),
+      d$.rust_ptr,
       err,
       as.double(omega_a),
       pool_flag)

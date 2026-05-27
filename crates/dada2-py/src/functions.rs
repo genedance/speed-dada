@@ -4,8 +4,9 @@
 #![allow(clippy::missing_errors_doc, clippy::must_use_candidate)]
 
 use crate::types::{
-    PyDadaResult, PyErrorModel, PyFilterConfig, PyFilterStats, PyFilterStatsPaired,
-    PyMergedRead, PyQualityProfile, PySequenceTable, PyTaxonAssignment,
+    PyDadaResult, PyDerepResult, PyErrorModel, PyFilterConfig, PyFilterStats,
+    PyFilterStatsPaired, PyMergedRead, PyQualityProfile, PySequenceTable,
+    PyTaxonAssignment,
 };
 use dada2_core::{
     chimera::remove_bimera_denovo,
@@ -270,10 +271,13 @@ pub fn learn_errors_py(
 ///
 /// Returns
 /// -------
-/// list[tuple[bytes, int]]
+/// DerepResult
+///     Opaque handle carrying per-position quality across the FFI boundary
+///     into the dada functions. Indexable as (sequence: bytes, count: int)
+///     tuples for back-compat introspection.
 #[pyfunction]
 #[pyo3(name = "derep_fastq")]
-pub fn derep_fastq_py(py: Python<'_>, fastq_path: &str) -> PyResult<Vec<(Vec<u8>, u32)>> {
+pub fn derep_fastq_py(py: Python<'_>, fastq_path: &str) -> PyResult<PyDerepResult> {
     let path = fastq_path.to_owned();
     let uniques = py
         .allow_threads(move || {
@@ -281,14 +285,15 @@ pub fn derep_fastq_py(py: Python<'_>, fastq_path: &str) -> PyResult<Vec<(Vec<u8>
             derep_fastq(&records)
         })
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-    Ok(uniques.into_iter().map(|u| (u.seq, u.count)).collect())
+    Ok(PyDerepResult(uniques))
 }
 
 /// Run the DADA denoising algorithm.
 ///
 /// Parameters
 /// ----------
-/// derep : list[tuple[bytes, int]]
+/// derep : DerepResult
+///     Output of :py:func:`derep_fastq`.
 /// error_model : ErrorModel
 /// omega_a : float, optional
 /// pool : bool, optional
@@ -301,21 +306,15 @@ pub fn derep_fastq_py(py: Python<'_>, fastq_path: &str) -> PyResult<Vec<(Vec<u8>
 #[pyo3(signature = (derep, error_model, omega_a = 1e-40, pool = false))]
 pub fn dada_py(
     py: Python<'_>,
-    derep: Vec<(Vec<u8>, u32)>,
+    derep: PyRef<PyDerepResult>,
     error_model: &PyErrorModel,
     omega_a: f64,
     pool: bool,
 ) -> PyResult<PyDadaResult> {
     let inner_em = error_model.0.clone();
+    let uniques = derep.0.clone();
     let asvs = py
         .allow_threads(move || {
-            let uniques: Vec<dada2_core::derep::UniqueSeq> = derep
-                .into_iter()
-                .map(|(seq, count)| {
-                    let qual_sum = vec![30.0 * f64::from(count); seq.len()];
-                    dada2_core::derep::UniqueSeq { seq, count, qual_sum }
-                })
-                .collect();
             let cfg = DadaConfig { omega_a, pool, ..Default::default() };
             dada(&uniques, &inner_em, &cfg)
         })
@@ -327,38 +326,28 @@ pub fn dada_py(
 ///
 /// Parameters
 /// ----------
-/// samples : list[list[tuple[bytes, int]]]
-///     One dereplicated sample per element (output of ``dereplicate``).
+/// samples : list[DerepResult]
+///     One per sample (output of :py:func:`derep_fastq`).
 /// error_model : ErrorModel
 /// omega_a : float, optional
 ///
 /// Returns
 /// -------
 /// list[DadaResult]
-///     One result per input sample.
 #[pyfunction]
 #[pyo3(name = "dada_pooled")]
 #[pyo3(signature = (samples, error_model, omega_a = 1e-40))]
 pub fn dada_pooled_py(
     py: Python<'_>,
-    samples: Vec<Vec<(Vec<u8>, u32)>>,
+    samples: Vec<PyRef<PyDerepResult>>,
     error_model: &PyErrorModel,
     omega_a: f64,
 ) -> PyResult<Vec<PyDadaResult>> {
     let inner_em = error_model.0.clone();
+    let converted: Vec<Vec<dada2_core::derep::UniqueSeq>> =
+        samples.iter().map(|d| d.0.clone()).collect();
     let results = py
         .allow_threads(move || {
-            let converted: Vec<Vec<dada2_core::derep::UniqueSeq>> = samples
-                .into_iter()
-                .map(|s| {
-                    s.into_iter()
-                        .map(|(seq, count)| {
-                            let qual_sum = vec![30.0 * f64::from(count); seq.len()];
-                            dada2_core::derep::UniqueSeq { seq, count, qual_sum }
-                        })
-                        .collect()
-                })
-                .collect();
             let refs: Vec<&[dada2_core::derep::UniqueSeq]> =
                 converted.iter().map(Vec::as_slice).collect();
             let cfg = DadaConfig { omega_a, ..Default::default() };
@@ -370,13 +359,9 @@ pub fn dada_pooled_py(
 
 /// Run DADA per-sample for multiple samples, parallelised across Rayon.
 ///
-/// Same algorithm as calling :py:func:`dada` once per sample — just runs the
-/// per-sample calls concurrently instead of leaving cross-sample parallelism
-/// unused in a Python for-loop.
-///
 /// Parameters
 /// ----------
-/// samples : list[list[tuple[bytes, int]]]
+/// samples : list[DerepResult]
 /// error_model : ErrorModel
 /// omega_a : float, optional
 ///
@@ -388,24 +373,15 @@ pub fn dada_pooled_py(
 #[pyo3(signature = (samples, error_model, omega_a = 1e-40))]
 pub fn dada_many_py(
     py: Python<'_>,
-    samples: Vec<Vec<(Vec<u8>, u32)>>,
+    samples: Vec<PyRef<PyDerepResult>>,
     error_model: &PyErrorModel,
     omega_a: f64,
 ) -> PyResult<Vec<PyDadaResult>> {
     let inner_em = error_model.0.clone();
+    let converted: Vec<Vec<dada2_core::derep::UniqueSeq>> =
+        samples.iter().map(|d| d.0.clone()).collect();
     let results = py
         .allow_threads(move || {
-            let converted: Vec<Vec<dada2_core::derep::UniqueSeq>> = samples
-                .into_iter()
-                .map(|s| {
-                    s.into_iter()
-                        .map(|(seq, count)| {
-                            let qual_sum = vec![30.0 * f64::from(count); seq.len()];
-                            dada2_core::derep::UniqueSeq { seq, count, qual_sum }
-                        })
-                        .collect()
-                })
-                .collect();
             let refs: Vec<&[dada2_core::derep::UniqueSeq]> =
                 converted.iter().map(Vec::as_slice).collect();
             let cfg = DadaConfig { omega_a, ..Default::default() };
@@ -417,12 +393,9 @@ pub fn dada_many_py(
 
 /// Run DADA with pseudo-pooling (Callahan two-pass cross-sample scheme).
 ///
-/// Pass 1: per-sample DADA in parallel, collect ASVs → priors.
-/// Pass 2: per-sample DADA in parallel with priors auto-promoted.
-///
 /// Parameters
 /// ----------
-/// samples : list[list[tuple[bytes, int]]]
+/// samples : list[DerepResult]
 /// error_model : ErrorModel
 /// omega_a : float, optional
 ///
@@ -434,24 +407,15 @@ pub fn dada_many_py(
 #[pyo3(signature = (samples, error_model, omega_a = 1e-40))]
 pub fn dada_pseudo_py(
     py: Python<'_>,
-    samples: Vec<Vec<(Vec<u8>, u32)>>,
+    samples: Vec<PyRef<PyDerepResult>>,
     error_model: &PyErrorModel,
     omega_a: f64,
 ) -> PyResult<Vec<PyDadaResult>> {
     let inner_em = error_model.0.clone();
+    let converted: Vec<Vec<dada2_core::derep::UniqueSeq>> =
+        samples.iter().map(|d| d.0.clone()).collect();
     let results = py
         .allow_threads(move || {
-            let converted: Vec<Vec<dada2_core::derep::UniqueSeq>> = samples
-                .into_iter()
-                .map(|s| {
-                    s.into_iter()
-                        .map(|(seq, count)| {
-                            let qual_sum = vec![30.0 * f64::from(count); seq.len()];
-                            dada2_core::derep::UniqueSeq { seq, count, qual_sum }
-                        })
-                        .collect()
-                })
-                .collect();
             let refs: Vec<&[dada2_core::derep::UniqueSeq]> =
                 converted.iter().map(Vec::as_slice).collect();
             let cfg = DadaConfig { omega_a, ..Default::default() };

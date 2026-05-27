@@ -36,19 +36,22 @@ unsafe impl Send for RErrorModel {}
 #[extendr]
 impl RErrorModel {}
 
-// ── Shared helpers ────────────────────────────────────────────────────────────
+// ── Derep external pointer ────────────────────────────────────────────────────
 
-/// Reconstruct dereplicated sequences from parallel `seqs` / `counts` vectors.
-fn uniques_from_r(seqs: &[String], counts: &[i32]) -> Vec<UniqueSeq> {
-    seqs.iter()
-        .zip(counts.iter())
-        .map(|(s, &c)| {
-            let seq = s.as_bytes().to_vec();
-            let len = seq.len();
-            UniqueSeq { seq, count: c as u32, qual_sum: vec![30.0 * f64::from(c); len] }
-        })
-        .collect()
-}
+/// Opaque wrapper so a per-sample dereplicated `Vec<UniqueSeq>` can live in
+/// an R `externalptr`.
+///
+/// This carries the FULL `UniqueSeq` (including `qual_sum`) across the FFI
+/// boundary, so the dada algorithm uses *real* per-position quality from
+/// the FASTQ data — not a hardcoded Phred-30 placeholder that the previous
+/// (seq, count)-only representation forced us to fabricate.
+pub struct RDereped(pub Vec<UniqueSeq>);
+
+#[allow(unsafe_code)]
+unsafe impl Send for RDereped {}
+
+#[extendr]
+impl RDereped {}
 
 /// Reconstruct [`Asv`] vec from parallel `seqs` / `counts` vectors.
 fn asvs_from_r(seqs: &[String], counts: &[i32]) -> Vec<Asv> {
@@ -170,8 +173,12 @@ fn learnErrors(fls: Vec<String>, nbases: f64) -> ExternalPtr<RErrorModel> {
 
 /// Dereplicate one FASTQ file.
 ///
-/// Returns a list `(seqs = character, counts = integer)` — the R wrapper
-/// builds the named integer `$uniques` vector and attaches class `"derep"`.
+/// Returns a list `(seqs, counts, ptr)` — the R wrapper builds the named
+/// integer `$uniques` vector (back-compat introspection), and stores `ptr`
+/// as `.rust_ptr` on the derep object. Downstream `dada()` calls extract
+/// the full `Vec<UniqueSeq>` (including per-position quality) through that
+/// pointer, instead of round-tripping through `(seq, count)` tuples that
+/// dropped quality information.
 #[extendr]
 fn derepFastq(path: &str) -> List {
     let records =
@@ -181,27 +188,27 @@ fn derepFastq(path: &str) -> List {
     let seqs: Vec<String> =
         uniques.iter().map(|u| String::from_utf8_lossy(&u.seq).into_owned()).collect();
     let counts: Vec<i32> = uniques.iter().map(|u| u.count as i32).collect();
-    list!(seqs = seqs, counts = counts)
+    let ptr = ExternalPtr::new(RDereped(uniques));
+    list!(seqs = seqs, counts = counts, ptr = ptr)
 }
 
 // ── 4. dada ──────────────────────────────────────────────────────────────────
 
 /// Run DADA denoising on a single sample.
 ///
-/// Accepts a dereplicated sample as parallel `seqs` / `counts` vectors.
+/// Takes the opaque dereplicated sample handle from `wrap__derepFastq`
+/// (carrying per-position quality), the error model, and DADA parameters.
 /// Returns `(seqs = character, counts = integer)` for the denoised ASVs.
 #[extendr]
 fn dada(
-    seqs: Vec<String>,
-    counts: Vec<i32>,
+    derep: ExternalPtr<RDereped>,
     err: ExternalPtr<RErrorModel>,
     omega_a: f64,
     pool: bool,
 ) -> List {
-    let uniques = uniques_from_r(&seqs, &counts);
     let cfg = DadaConfig { omega_a, pool, ..Default::default() };
     let asvs =
-        dada_core(&uniques, &err.0, &cfg).unwrap_or_else(|e| panic!("dada: {e}"));
+        dada_core(&derep.0, &err.0, &cfg).unwrap_or_else(|e| panic!("dada: {e}"));
     let out_seqs: Vec<String> =
         asvs.iter().map(|a| String::from_utf8_lossy(&a.sequence).into_owned()).collect();
     let out_counts: Vec<i32> = asvs.iter().map(|a| a.abundance as i32).collect();
@@ -210,36 +217,29 @@ fn dada(
 
 // ── 4a. dada_many ───────────────────────────────────────────────────────────
 
-/// Run DADA per-sample across multiple samples, parallelised via Rayon.
-///
-/// Same flat input layout as [`dada_pooled`] / [`dada_pseudo`], but no
-/// cross-sample priors — each sample is denoised independently. This is
-/// what backs `dada2rs::dada(list_of_dereps, pool=FALSE)` so cross-sample
-/// parallelism isn't lost to R's serial `lapply()`.
-#[extendr]
-fn dada_many(
-    sample_idx: Vec<i32>,
-    seqs: Vec<String>,
-    counts: Vec<i32>,
-    n_samples: i32,
-    err: ExternalPtr<RErrorModel>,
+/// Take a list of derep externalptrs and a wrapper closure that runs a
+/// core multi-sample dada call (dada_many/dada_pooled/dada_pseudo), then
+/// flattens the result back to parallel sample_idx / seqs / counts vectors.
+fn dispatch_multi_sample<F>(
+    dereps: List,
+    err: &dada2_core::error_model::ErrorModel,
     omega_a: f64,
-) -> List {
-    let n = n_samples as usize;
-    let mut per_sample: Vec<Vec<UniqueSeq>> = (0..n).map(|_| Vec::new()).collect();
-    for ((&si, s), &c) in sample_idx.iter().zip(seqs.iter()).zip(counts.iter()) {
-        let seq = s.as_bytes().to_vec();
-        let len = seq.len();
-        per_sample[si as usize].push(UniqueSeq {
-            seq,
-            count: c as u32,
-            qual_sum: vec![30.0 * f64::from(c); len],
-        });
-    }
-    let refs: Vec<&[UniqueSeq]> = per_sample.iter().map(|v| v.as_slice()).collect();
-    let cfg = DadaConfig { omega_a, pool: false, ..Default::default() };
-    let result = dada_many_core(&refs, &err.0, &cfg)
-        .unwrap_or_else(|e| panic!("dada_many: {e}"));
+    kernel: F,
+) -> List
+where
+    F: FnOnce(&[&[UniqueSeq]], &dada2_core::error_model::ErrorModel, &DadaConfig)
+        -> Result<Vec<Vec<Asv>>, dada2_core::Dada2Error>,
+{
+    // Robj for each list element; downcast each to ExternalPtr<RDereped>.
+    let owned: Vec<ExternalPtr<RDereped>> = dereps
+        .iter()
+        .map(|(_, r)| ExternalPtr::<RDereped>::try_from(r)
+            .unwrap_or_else(|e| panic!("expected list of derep externalptrs: {e:?}")))
+        .collect();
+    let refs: Vec<&[UniqueSeq]> = owned.iter().map(|p| p.0.as_slice()).collect();
+    let cfg = DadaConfig { omega_a, ..Default::default() };
+    let result = kernel(&refs, err, &cfg)
+        .unwrap_or_else(|e| panic!("dada multi-sample: {e}"));
 
     let mut out_sample_idx: Vec<i32> = Vec::new();
     let mut out_seqs: Vec<String> = Vec::new();
@@ -252,102 +252,55 @@ fn dada_many(
         }
     }
     list!(sample_idx = out_sample_idx, seqs = out_seqs, counts = out_counts)
+}
+
+/// Run DADA per-sample across multiple samples, parallelised via Rayon.
+///
+/// Takes a list of derep externalptrs (one per sample) carrying per-position
+/// quality. Each sample is denoised independently; no cross-sample priors.
+#[extendr]
+fn dada_many(
+    dereps: List,
+    err: ExternalPtr<RErrorModel>,
+    omega_a: f64,
+) -> List {
+    dispatch_multi_sample(dereps, &err.0, omega_a, dada_many_core)
 }
 
 // ── 4b. dada_pooled ─────────────────────────────────────────────────────────
 
 /// Run DADA denoising on multiple samples with cross-sample pooling.
 ///
-/// Inputs are flat parallel vectors covering all samples:
-///   `sample_idx[i]` = which sample the i-th derep entry belongs to (0-based),
-///   `seqs[i]`       = the dereplicated sequence,
-///   `counts[i]`     = its observed count in that sample.
-/// `n_samples` is the total number of samples (output is padded for empty samples).
-///
-/// Returns parallel vectors `(sample_idx, seqs, counts)` of per-sample ASVs
-/// after pooled denoising.
+/// Takes a list of derep externalptrs (one per sample) carrying per-position
+/// quality. Returns parallel vectors `(sample_idx, seqs, counts)` of
+/// per-sample ASVs after pooled denoising.
 #[extendr]
 fn dada_pooled(
-    sample_idx: Vec<i32>,
-    seqs: Vec<String>,
-    counts: Vec<i32>,
-    n_samples: i32,
+    dereps: List,
     err: ExternalPtr<RErrorModel>,
     omega_a: f64,
 ) -> List {
-    let n = n_samples as usize;
-    let mut per_sample: Vec<Vec<UniqueSeq>> = (0..n).map(|_| Vec::new()).collect();
-    for ((&si, s), &c) in sample_idx.iter().zip(seqs.iter()).zip(counts.iter()) {
-        let seq = s.as_bytes().to_vec();
-        let len = seq.len();
-        per_sample[si as usize].push(UniqueSeq {
-            seq,
-            count: c as u32,
-            qual_sum: vec![30.0 * f64::from(c); len],
-        });
-    }
-    let refs: Vec<&[UniqueSeq]> = per_sample.iter().map(|v| v.as_slice()).collect();
-    let cfg = DadaConfig { omega_a, pool: true, ..Default::default() };
-    let result = dada_pooled_core(&refs, &err.0, &cfg)
-        .unwrap_or_else(|e| panic!("dada_pooled: {e}"));
-
-    let mut out_sample_idx: Vec<i32> = Vec::new();
-    let mut out_seqs: Vec<String> = Vec::new();
-    let mut out_counts: Vec<i32> = Vec::new();
-    for (si, asvs) in result.iter().enumerate() {
-        for a in asvs {
-            out_sample_idx.push(si as i32);
-            out_seqs.push(String::from_utf8_lossy(&a.sequence).into_owned());
-            out_counts.push(a.abundance as i32);
-        }
-    }
-    list!(sample_idx = out_sample_idx, seqs = out_seqs, counts = out_counts)
+    dispatch_multi_sample(dereps, &err.0, omega_a, |refs, err, cfg| {
+        let mut cfg = cfg.clone();
+        cfg.pool = true;
+        dada_pooled_core(refs, err, &cfg)
+    })
 }
 
 // ── 4c. dada_pseudo ─────────────────────────────────────────────────────────
 
 /// Run DADA with two-pass pseudo-pooling across samples.
 ///
-/// Same flat input layout as [`dada_pooled`]: parallel `sample_idx` / `seqs` /
-/// `counts` vectors, with `n_samples` giving total sample count. Internally
-/// runs per-sample DADA in parallel, collects ASV priors, then re-runs
-/// per-sample DADA in parallel with the priors auto-promoting.
+/// Takes a list of derep externalptrs (one per sample) carrying per-position
+/// quality. Returns parallel vectors `(sample_idx, seqs, counts)` of
+/// per-sample ASVs after pseudo-pool denoising.
 #[extendr]
 fn dada_pseudo(
-    sample_idx: Vec<i32>,
-    seqs: Vec<String>,
-    counts: Vec<i32>,
-    n_samples: i32,
+    dereps: List,
     err: ExternalPtr<RErrorModel>,
     omega_a: f64,
 ) -> List {
-    let n = n_samples as usize;
-    let mut per_sample: Vec<Vec<UniqueSeq>> = (0..n).map(|_| Vec::new()).collect();
-    for ((&si, s), &c) in sample_idx.iter().zip(seqs.iter()).zip(counts.iter()) {
-        let seq = s.as_bytes().to_vec();
-        let len = seq.len();
-        per_sample[si as usize].push(UniqueSeq {
-            seq,
-            count: c as u32,
-            qual_sum: vec![30.0 * f64::from(c); len],
-        });
-    }
-    let refs: Vec<&[UniqueSeq]> = per_sample.iter().map(|v| v.as_slice()).collect();
-    let cfg = DadaConfig { omega_a, pool: false, ..Default::default() };
-    let result = dada_pseudo_core(&refs, &err.0, &cfg)
-        .unwrap_or_else(|e| panic!("dada_pseudo: {e}"));
-
-    let mut out_sample_idx: Vec<i32> = Vec::new();
-    let mut out_seqs: Vec<String> = Vec::new();
-    let mut out_counts: Vec<i32> = Vec::new();
-    for (si, asvs) in result.iter().enumerate() {
-        for a in asvs {
-            out_sample_idx.push(si as i32);
-            out_seqs.push(String::from_utf8_lossy(&a.sequence).into_owned());
-            out_counts.push(a.abundance as i32);
-        }
-    }
-    list!(sample_idx = out_sample_idx, seqs = out_seqs, counts = out_counts)
+    dispatch_multi_sample(dereps, &err.0, omega_a, dada_pseudo_core)
 }
 
 // ── 5. mergePairs ────────────────────────────────────────────────────────────
@@ -478,6 +431,7 @@ fn removeBimeraDenovo(seqs: Vec<String>, counts: Vec<i32>) -> Vec<i32> {
 extendr_module! {
     mod dada2rs;
     impl RErrorModel;
+    impl RDereped;
     fn filterAndTrim;
     fn learnErrors;
     fn derepFastq;
