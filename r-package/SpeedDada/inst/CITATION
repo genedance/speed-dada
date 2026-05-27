@@ -1,0 +1,30 @@
+citHeader("To cite SpeedDada, please cite both the original DADA2 algorithm and this package:")
+
+bibentry(
+  bibtype = "Article",
+  title   = "DADA2: High-resolution sample inference from Illumina amplicon data",
+  author  = c(
+    person("Benjamin J.", "Callahan"),
+    person("Paul J.", "McMurdie"),
+    person("Michael J.", "Rosen"),
+    person("Andrew W.", "Han"),
+    person("Amy Jo A.", "Johnson"),
+    person("Susan P.", "Holmes")
+  ),
+  journal = "Nature Methods",
+  year    = "2016",
+  volume  = "13",
+  number  = "7",
+  pages   = "581--583",
+  doi     = "10.1038/nmeth.3869"
+)
+
+bibentry(
+  bibtype      = "Manual",
+  title        = "{SpeedDada}: High-Performance Drop-In Replacement for {DADA2} (Rust Core)",
+  author       = person("Alexandre", "Jousset", email = "info@genedance.com"),
+  organization = "Genedance GmbH",
+  year         = format(Sys.Date(), "%Y"),
+  note         = sprintf("R package version %s", utils::packageVersion("SpeedDada")),
+  url          = "https://github.com/Genedance/speed-dada"
+)

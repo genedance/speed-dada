@@ -1,0 +1,40 @@
+cff-version: 1.2.0
+title: "speed-dada (SpeedDada / speeddada): High-Performance Drop-In DADA2 (Rust Core)"
+message: "If you use this software, please cite both the original DADA2 paper and this package."
+type: software
+authors:
+  - given-names: Alexandre
+    family-names: Jousset
+    email: info@genedance.com
+    affiliation: Genedance GmbH
+identifiers:
+  - type: url
+    value: "https://github.com/Genedance/speed-dada"
+repository-code: "https://github.com/Genedance/speed-dada"
+url: "https://genedance.github.io/speed-dada/"
+license: MIT
+version: 0.99.0
+date-released: 2026-05-27
+references:
+  - type: article
+    title: "DADA2: High-resolution sample inference from Illumina amplicon data"
+    authors:
+      - family-names: Callahan
+        given-names: Benjamin J.
+      - family-names: McMurdie
+        given-names: Paul J.
+      - family-names: Rosen
+        given-names: Michael J.
+      - family-names: Han
+        given-names: Andrew W.
+      - family-names: Johnson
+        given-names: Amy Jo A.
+      - family-names: Holmes
+        given-names: Susan P.
+    journal: "Nature Methods"
+    volume: 13
+    issue: 7
+    year: 2016
+    start: 581
+    end: 583
+    doi: "10.1038/nmeth.3869"

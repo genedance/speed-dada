@@ -1,0 +1,70 @@
+#!/bin/sh
+# configure.win — Windows variant. Find the Rust workspace + cargo.exe and
+# stamp src/Makevars.win.in → src/Makevars.win. Run by R CMD INSTALL on
+# Windows under Rtools' MSYS2 sh.
+
+set -e
+
+PKG_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# ── 1. Find the workspace (prefer parent, fall back to vendored). ───────────
+if [ -f "${PKG_DIR}/../../Cargo.toml" ] && \
+   grep -q '\[workspace\]' "${PKG_DIR}/../../Cargo.toml" 2>/dev/null; then
+    WORKSPACE_ROOT="$(cd "${PKG_DIR}/../.." && pwd)"
+    echo "SpeedDada: building from parent workspace at ${WORKSPACE_ROOT}"
+elif [ -f "${PKG_DIR}/src/rust/Cargo.toml" ]; then
+    WORKSPACE_ROOT="${PKG_DIR}/src/rust"
+    echo "SpeedDada: building from vendored src/rust workspace"
+else
+    cat >&2 <<EOF
+ERROR: Could not find Rust source. Looked for:
+  * ${PKG_DIR}/src/rust/Cargo.toml   (vendored layout)
+  * ${PKG_DIR}/../../Cargo.toml      (development layout)
+EOF
+    exit 1
+fi
+
+# ── 2. Locate cargo.exe ──────────────────────────────────────────────────────
+CARGO=""
+if [ -n "${USERPROFILE}" ] && [ -x "${USERPROFILE}/.cargo/bin/cargo.exe" ]; then
+    CARGO="${USERPROFILE}/.cargo/bin/cargo.exe"
+elif [ -x "${HOME}/.cargo/bin/cargo.exe" ]; then
+    CARGO="${HOME}/.cargo/bin/cargo.exe"
+elif command -v cargo.exe >/dev/null 2>&1; then
+    CARGO="$(command -v cargo.exe)"
+elif command -v cargo >/dev/null 2>&1; then
+    CARGO="$(command -v cargo)"
+else
+    cat >&2 <<'EOF'
+ERROR: cargo.exe not found.
+
+SpeedDada requires the Rust toolchain on Windows. Install it via:
+
+    https://rustup.rs (downloads rustup-init.exe), then:
+        rustup default stable-x86_64-pc-windows-gnu
+
+so cargo emits GNU-ABI binaries compatible with R / Rtools. Restart your
+shell so %USERPROFILE%\.cargo\bin is on PATH, then re-run
+install.packages("SpeedDada").
+EOF
+    exit 1
+fi
+
+# Normalise path: MSYS expects forward slashes for Make targets.
+CARGO_FWD="$(echo "${CARGO}" | sed 's|\\\\|/|g')"
+WORKSPACE_FWD="$(echo "${WORKSPACE_ROOT}" | sed 's|\\\\|/|g')"
+
+# ── 3. Target triple: Rtools uses MinGW64 → x86_64-pc-windows-gnu. ───────────
+TARGET="x86_64-pc-windows-gnu"
+if "${CARGO}" --version 2>/dev/null | grep -q "i686"; then
+    TARGET="i686-pc-windows-gnu"
+fi
+
+echo "SpeedDada: workspace=${WORKSPACE_FWD}"
+echo "SpeedDada: cargo=${CARGO_FWD}"
+echo "SpeedDada: target=${TARGET}"
+
+sed -e "s|@WORKSPACE_ROOT@|${WORKSPACE_FWD}|g" \
+    -e "s|@CARGO@|${CARGO_FWD}|g" \
+    -e "s|@TARGET@|${TARGET}|g" \
+    "${PKG_DIR}/src/Makevars.win.in" > "${PKG_DIR}/src/Makevars.win"

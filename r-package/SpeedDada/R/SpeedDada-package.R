@@ -1,0 +1,32 @@
+#' SpeedDada: High-Performance Drop-In Replacement for DADA2 (Rust Core)
+#'
+#' A drop-in replacement for the dada2 amplicon sequence variant (ASV)
+#' pipeline (Callahan et al. 2016, \doi{10.1038/nmeth.3869}), implemented
+#' in Rust and exposed via 'extendr'. The exported functions
+#' \code{\link{filterAndTrim}}, \code{\link{learnErrors}},
+#' \code{\link{derepFastq}}, \code{\link{dada}}, \code{\link{mergePairs}},
+#' \code{\link{makeSequenceTable}}, and \code{\link{removeBimeraDenovo}}
+#' mirror the original dada2 API: existing scripts run unchanged, but the
+#' underlying Rust core is typically one to two orders of magnitude faster
+#' and uses roughly ten-fold less peak memory.
+#'
+#' @section Cross-platform support:
+#' SpeedDada builds with the user's Rust toolchain (rustup recommended)
+#' on Linux (x86_64, aarch64), macOS (x86_64, arm64), and Windows (x86_64),
+#' including Raspberry Pi 5.
+#'
+#' @section Citation:
+#' If you use SpeedDada in a publication, please cite the original DADA2
+#' paper (Callahan et al. 2016) and this package; see
+#' \code{citation("SpeedDada")} for the exact entries.
+#'
+#' @references
+#' Callahan BJ, McMurdie PJ, Rosen MJ, Han AW, Johnson AJA, Holmes SP (2016).
+#' DADA2: High-resolution sample inference from Illumina amplicon data.
+#' \emph{Nature Methods}, 13(7):581-583. \doi{10.1038/nmeth.3869}.
+#'
+#' @keywords internal
+#' @name SpeedDada-package
+#' @aliases SpeedDada
+#' @importFrom stats setNames
+"_PACKAGE"

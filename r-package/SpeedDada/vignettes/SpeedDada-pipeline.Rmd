@@ -1,0 +1,107 @@
+---
+title: "End-to-end DADA2 pipeline with SpeedDada"
+author: "Alexandre Jousset, Genedance GmbH"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{End-to-end DADA2 pipeline with SpeedDada}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment  = "#>",
+  fig.path = "figures/"
+)
+```
+
+# Introduction
+
+`SpeedDada` provides a Rust-backed drop-in replacement for the
+[dada2](https://github.com/benjjneb/dada2) amplicon sequence variant (ASV)
+pipeline (Callahan et al. 2016, doi:10.1038/nmeth.3869). The seven exported
+functions mirror dada2's R API and return objects of the same shapes, so
+existing scripts run unchanged.
+
+This vignette walks through the full paired-end pipeline using a tiny
+FASTQ fixture shipped inside the package, so the example runs in seconds
+on any platform.
+
+# Setup
+
+```{r load}
+library(SpeedDada)
+
+fwd <- system.file("extdata", "sample_R1.fastq", package = "SpeedDada")
+rev <- system.file("extdata", "sample_R2.fastq", package = "SpeedDada")
+fwd
+```
+
+# 1. Quality filtering
+
+```{r filter}
+fwd_filt <- tempfile(fileext = ".fastq")
+rev_filt <- tempfile(fileext = ".fastq")
+stats <- filterAndTrim(
+  fwd, fwd_filt, rev, rev_filt,
+  truncLen = c(30, 30),
+  maxEE    = c(5, 5),
+  minLen   = 10
+)
+stats
+```
+
+# 2. Learn the error model
+
+```{r learn-errors}
+err <- learnErrors(c(fwd_filt, rev_filt), nbases = 1e4)
+```
+
+# 3. Dereplicate and denoise
+
+```{r dada}
+dF <- derepFastq(fwd_filt)
+dR <- derepFastq(rev_filt)
+
+aF <- dada(dF, err, omega_a = 1e-5)
+aR <- dada(dR, err, omega_a = 1e-5)
+head(aF$denoised)
+```
+
+# 4. Merge pairs and build the sequence table
+
+```{r merge}
+merged <- mergePairs(aF, dF, aR, dR, minOverlap = 5)
+head(merged)
+
+seqtab <- makeSequenceTable(list(s1 = merged))
+dim(seqtab)
+```
+
+# 5. Remove chimeras
+
+```{r chimera}
+seqtab_clean <- removeBimeraDenovo(seqtab)
+dim(seqtab_clean)
+```
+
+# Cross-sample pooling
+
+`SpeedDada` supports both `pool = TRUE` (full cross-sample pooling) and
+`pool = "pseudo"` (Callahan's two-pass pseudo-pooling). Provide a *named
+list* of `derep` objects as the first argument to `dada`:
+
+```{r pool, eval = FALSE}
+multi <- list(s1 = dF, s2 = dR)
+res_pseudo <- dada(multi, err, pool = "pseudo")
+```
+
+# Session info
+
+```{r sessioninfo}
+sessionInfo()
+```
