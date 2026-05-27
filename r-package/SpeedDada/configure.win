@@ -7,6 +7,17 @@ set -e
 
 PKG_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Convert Windows-style paths (`C:\Users\foo`) to forward-slash MSYS paths
+# (`C:/Users/foo`). Make / sh inside Rtools eat single backslashes as escape
+# characters when invoking commands, so any backslash that survives into
+# Makevars.win mangles the cargo invocation.
+normalise() {
+    # Single quotes around the sed expression are critical: the shell does
+    # not touch the two literal backslashes, sed sees the regex `\\`, which
+    # matches one backslash, and replaces it with `/`.
+    printf '%s' "$1" | sed 's|\\|/|g'
+}
+
 # ── 1. Find the workspace (prefer parent, fall back to vendored). ───────────
 if [ -f "${PKG_DIR}/../../Cargo.toml" ] && \
    grep -q '\[workspace\]' "${PKG_DIR}/../../Cargo.toml" 2>/dev/null; then
@@ -24,17 +35,26 @@ EOF
     exit 1
 fi
 
-# ── 2. Locate cargo.exe ──────────────────────────────────────────────────────
+# ── 2. Locate cargo.exe. ────────────────────────────────────────────────────
+# Prefer the PATH lookup — when the rust-toolchain CI action set up cargo it
+# is already on PATH, and `command -v` returns whatever form the surrounding
+# shell will accept (MSYS-style or Windows-style). Fall back to the canonical
+# rustup install location.
 CARGO=""
-if [ -n "${USERPROFILE}" ] && [ -x "${USERPROFILE}/.cargo/bin/cargo.exe" ]; then
-    CARGO="${USERPROFILE}/.cargo/bin/cargo.exe"
-elif [ -x "${HOME}/.cargo/bin/cargo.exe" ]; then
-    CARGO="${HOME}/.cargo/bin/cargo.exe"
+if command -v cargo >/dev/null 2>&1; then
+    CARGO="$(command -v cargo)"
 elif command -v cargo.exe >/dev/null 2>&1; then
     CARGO="$(command -v cargo.exe)"
-elif command -v cargo >/dev/null 2>&1; then
-    CARGO="$(command -v cargo)"
 else
+    USERPROFILE_FWD="$(normalise "${USERPROFILE:-}")"
+    if [ -n "${USERPROFILE_FWD}" ] && [ -x "${USERPROFILE_FWD}/.cargo/bin/cargo.exe" ]; then
+        CARGO="${USERPROFILE_FWD}/.cargo/bin/cargo.exe"
+    elif [ -x "${HOME}/.cargo/bin/cargo.exe" ]; then
+        CARGO="${HOME}/.cargo/bin/cargo.exe"
+    fi
+fi
+
+if [ -z "${CARGO}" ]; then
     cat >&2 <<'EOF'
 ERROR: cargo.exe not found.
 
@@ -50,9 +70,10 @@ EOF
     exit 1
 fi
 
-# Normalise path: MSYS expects forward slashes for Make targets.
-CARGO_FWD="$(echo "${CARGO}" | sed 's|\\\\|/|g')"
-WORKSPACE_FWD="$(echo "${WORKSPACE_ROOT}" | sed 's|\\\\|/|g')"
+# Normalise every path: convert backslashes to forward slashes so Make and
+# sh inside Rtools handle them correctly.
+CARGO_FWD="$(normalise "${CARGO}")"
+WORKSPACE_FWD="$(normalise "${WORKSPACE_ROOT}")"
 
 # ── 3. Target triple: Rtools uses MinGW64 → x86_64-pc-windows-gnu. ───────────
 TARGET="x86_64-pc-windows-gnu"

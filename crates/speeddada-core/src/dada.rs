@@ -94,6 +94,7 @@ pub fn dada(
 ///
 /// # Errors
 /// Returns [`Dada2Error::InvalidInput`] if `uniques` is empty.
+#[allow(clippy::implicit_hasher)]
 pub fn dada_with_priors(
     uniques: &[UniqueSeq],
     error_model: &ErrorModel,

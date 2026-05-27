@@ -26,6 +26,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      # libbz2 dev headers — needletail's bzip2 dep needs <bzlib.h> at build
+      # time. ubuntu-latest ships the runtime libbz2 but not the headers;
+      # macOS-latest already has them via the SDK; windows-latest gets them
+      # from Rtools' bundled MinGW64 toolchain.
+      - name: Install libbz2-dev (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libbz2-dev
+
       - uses: r-lib/actions/setup-r@v2
         with:
           r-version: ${{ matrix.config.r }}

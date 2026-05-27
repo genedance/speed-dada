@@ -265,7 +265,9 @@ mod tests {
             z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
             z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
             z ^= z >> 31;
-            v.push(bases[(z as usize) % 4]);
+            // `& 3` keeps only the low two bits, so the `as usize` cast is
+            // exact on any pointer width (avoids clippy::cast_possible_truncation).
+            v.push(bases[(z & 3) as usize]);
         }
         UniqueSeq {
             seq: v,
@@ -274,7 +276,7 @@ mod tests {
         }
     }
 
-    /// Reference O(centres × seq_len) implementation — no pruning. Used to
+    /// Reference `O(centres × seq_len)` implementation — no pruning. Used to
     /// verify that the pruned `best_centre_serial_packed` returns identical
     /// argmax + log-likelihood.
     fn best_centre_exhaustive_packed(logp: &[[f32; 4]], centre_packed: &[Vec<u8>]) -> (usize, f64) {

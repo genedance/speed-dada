@@ -54,26 +54,13 @@ EOF
 fi
 
 # ── 3. Locate libbz2 (used by needletail for .fq.bz2 inputs). ────────────────
+# Default to plain `-lbz2`; let the linker emit a clear error if libbz2 is
+# genuinely absent. If pkg-config has a bzip2 entry, use its more specific
+# flags (handles non-standard install prefixes on e.g. Homebrew macOS).
 BZ_LIB="-lbz2"
 if command -v pkg-config >/dev/null 2>&1 && \
    pkg-config --exists bzip2 2>/dev/null; then
     BZ_LIB="$(pkg-config --libs bzip2)"
-elif "${CC:-cc}" -lbz2 -E -xc /dev/null >/dev/null 2>&1; then
-    BZ_LIB="-lbz2"
-else
-    cat >&2 <<'EOF'
-ERROR: libbz2 development headers were not found.
-
-Install them with one of:
-
-    Debian / Ubuntu:  sudo apt-get install libbz2-dev
-    Fedora / RHEL:    sudo dnf install bzip2-devel
-    macOS (Homebrew): brew install bzip2
-    macOS (Xcode):    libbz2 should ship with the SDK; no extra steps.
-
-Then re-run install.packages("SpeedDada").
-EOF
-    exit 1
 fi
 
 # ── 4. Platform-specific link flags. ─────────────────────────────────────────

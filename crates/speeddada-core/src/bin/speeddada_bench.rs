@@ -1,6 +1,18 @@
 //! Standalone speeddada-core benchmark binary — no Python or R bindings.
 //!
-//! Runs the full pipeline (filter → learn_errors → derep → dada_pseudo
+//! Internal tool, not part of the public library surface. Relax a few
+//! pedantic lints that the library itself respects but that would be
+//! noise here (long main fn, doc backtick nitpicks on stage names).
+#![allow(
+    clippy::doc_markdown,
+    clippy::similar_names,
+    clippy::too_many_lines,
+    clippy::redundant_closure_for_method_calls,
+    clippy::unnecessary_sort_by,
+    clippy::struct_field_names
+)]
+//!
+//! Runs the full pipeline (filter → `learn_errors` → derep → `dada_pseudo`
 //! → merge → chimera) on N paired FASTQ samples and emits per-stage timings
 //! plus a JSON summary in the same format as `bench_rust.py` /
 //! `bench_speeddada.R`.
