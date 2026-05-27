@@ -57,31 +57,28 @@ jobs:
           name: wheels-linux-aarch64
           path: crates/speeddada-py/dist
 
-  # ─── macOS x86_64 + arm64 ──────────────────────────────────────────────────
+  # ─── macOS universal2 (Intel x86_64 + Apple Silicon arm64) ─────────────────
+  # Single wheel built on macos-14 (Apple Silicon) that contains binaries
+  # for both x86_64 and aarch64. This avoids the macos-13 (Intel) runner
+  # queue, which is heavily oversubscribed on free-tier orgs and held the
+  # whole release job in `queued` for over an hour.
   macos:
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      matrix:
-        include:
-          - runner: macos-13   # Intel
-            target: x86_64-apple-darwin
-          - runner: macos-14   # Apple Silicon
-            target: aarch64-apple-darwin
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Build wheels
+      - name: Build universal2 wheels
         uses: PyO3/maturin-action@v1
         with:
-          target: ${{ matrix.target }}
+          target: universal2-apple-darwin
           args: --release --out dist --interpreter 3.9 3.10 3.11 3.12 3.13
           sccache: true
           working-directory: crates/speeddada-py
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-macos-${{ matrix.target }}
+          name: wheels-macos-universal2
           path: crates/speeddada-py/dist
 
   # ─── Windows x86_64 ────────────────────────────────────────────────────────
