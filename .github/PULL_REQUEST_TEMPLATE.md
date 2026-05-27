@@ -12,8 +12,8 @@
 ## Checklist
 
 - [ ] `cargo fmt --all -- --check` passes
-- [ ] `cargo clippy --workspace --exclude speeddada-py --all-targets -- -D warnings` passes
-- [ ] `cargo test --workspace --exclude speeddada-py` passes
+- [ ] `cargo clippy --workspace --exclude speeddada-py --exclude speeddada-r --all-targets -- -D warnings` passes
+- [ ] `cargo test --workspace --exclude speeddada-py --exclude speeddada-r` passes
 - [ ] R: `R CMD check r-package/SpeedDada` passes (if R is touched)
 - [ ] Python: `pytest crates/speeddada-py/tests` passes (if Python is touched)
 - [ ] `CHANGELOG.md` updated

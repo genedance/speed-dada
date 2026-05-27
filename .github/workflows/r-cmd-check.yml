@@ -31,6 +31,16 @@ jobs:
           r-version: ${{ matrix.config.r }}
           use-public-rspm: true
 
+      - uses: r-lib/actions/setup-pandoc@v2
+
+      # R CMD check copies the package to a tempdir, so `configure`'s
+      # `../../Cargo.toml` parent-workspace lookup misses. Vendor the Rust
+      # source into r-package/SpeedDada/src/rust/ first so the copy is
+      # self-contained.
+      - name: Vendor Rust source into the R package
+        shell: bash
+        run: bash tools/vendor-r-rust.sh
+
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
           working-directory: r-package/SpeedDada

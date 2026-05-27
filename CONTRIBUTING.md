@@ -22,8 +22,8 @@ The workspace enforces a small set of conventions — most are checked by CI:
 ```bash
 # Rust
 cargo fmt --all -- --check
-cargo clippy --workspace --exclude speeddada-py --all-targets -- -D warnings
-cargo test  --workspace --exclude speeddada-py
+cargo clippy --workspace --exclude speeddada-py --exclude speeddada-r --all-targets -- -D warnings
+cargo test  --workspace --exclude speeddada-py --exclude speeddada-r
 
 # Python (extension module — needs maturin)
 cd crates/speeddada-py
