@@ -1,14 +1,17 @@
 [package]
-name = "dada2-r"
+name              = "speeddada-r"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+description       = "R bindings for the speeddada DADA2 pipeline (Rust core via extendr-api)."
+homepage.workspace   = true
+repository.workspace = true
 
 [lib]
-name = "dada2_r"
+name       = "speeddada_r"
 crate-type = ["staticlib"]
 
 [dependencies]
-extendr-api.workspace = true
-dada2-core.workspace = true
+extendr-api.workspace    = true
+speeddada-core.workspace = true

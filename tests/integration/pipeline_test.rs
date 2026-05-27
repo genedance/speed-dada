@@ -1,6 +1,6 @@
 //! End-to-end integration test: synthetic reads → ASV recovery.
 
-use dada2_core::{
+use speeddada_core::{
     dada::{dada, DadaConfig},
     derep::derep_fastq,
     error_model::{learn_errors, ErrorLearningConfig, ErrorModel},
@@ -15,12 +15,16 @@ fn generate_reads(true_seq: &[u8], n: usize, error_rate: f64, seed: u64) -> Vec<
     let mut records = Vec::with_capacity(n);
 
     for i in 0..n {
-        rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        rng = rng
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         let mut seq = true_seq.to_vec();
         let mut qual = vec![b'I'; seq.len()]; // Phred 40
 
         for j in 0..seq.len() {
-            rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            rng = rng
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             #[allow(clippy::cast_precision_loss, clippy::cast_lossless)]
             let p = (rng >> 33) as f64 / f64::from(u32::MAX);
             if p < error_rate {
@@ -33,7 +37,11 @@ fn generate_reads(true_seq: &[u8], n: usize, error_rate: f64, seed: u64) -> Vec<
                 }
             }
         }
-        records.push(FastqRecord { id: format!("read_{i}"), seq, qual });
+        records.push(FastqRecord {
+            id: format!("read_{i}"),
+            seq,
+            qual,
+        });
     }
     records
 }
@@ -65,16 +73,24 @@ fn pipeline_recovers_true_asv() {
 
     // Learn errors
     let filtered_records = read_fastq(filtered.path()).unwrap();
-    let em_cfg = ErrorLearningConfig { n_reads: 1000, max_iter: 100, tol: 1e-6, seed: 42 };
-    let error_model = learn_errors(&filtered_records, &em_cfg)
-        .unwrap_or_else(|_| ErrorModel::illumina_default());
+    let em_cfg = ErrorLearningConfig {
+        n_reads: 1000,
+        max_iter: 100,
+        tol: 1e-6,
+        seed: 42,
+    };
+    let error_model =
+        learn_errors(&filtered_records, &em_cfg).unwrap_or_else(|_| ErrorModel::illumina_default());
 
     // Dereplicate
     let uniques = derep_fastq(&filtered_records).unwrap();
     assert!(!uniques.is_empty());
 
     // DADA
-    let dada_cfg = DadaConfig { omega_a: 1e-10, ..Default::default() };
+    let dada_cfg = DadaConfig {
+        omega_a: 1e-10,
+        ..Default::default()
+    };
     let asvs = dada(&uniques, &error_model, &dada_cfg).unwrap();
     assert!(!asvs.is_empty(), "DADA returned no ASVs");
 

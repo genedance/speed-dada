@@ -1,9 +1,9 @@
-# dada2-rs
+# speed-dada
 
 A high-performance reimplementation of the [DADA2](https://github.com/benjjneb/dada2) amplicon sequence variant (ASV) pipeline, written in Rust. Exposes two language bindings:
 
-- **Python** — `dada2` module via PyO3/maturin (`crates/dada2-py`)
-- **R** — `dada2rs` drop-in package via extendr-api (`crates/dada2-r` + `r-package/dada2rs/`)
+- **Python** — `speeddada` module via PyO3/maturin (`crates/speeddada-py`)
+- **R** — `SpeedDada` drop-in package via extendr-api (`crates/speeddada-r` + `r-package/SpeedDada/`)
 
 **Reference:** Callahan et al. 2016, *Nature Methods* — doi:10.1038/nmeth.3869
 
@@ -26,7 +26,7 @@ A high-performance reimplementation of the [DADA2](https://github.com/benjjneb/d
 | Tool | ASVs found | Total time | vs R dada2 |
 |---|---|---|---|
 | R dada2 (reference) | 11 | 6 919 ms | 1× |
-| dada2rs (R binding) | 10 | 305 ms | **23×** |
+| SpeedDada (R binding) | 10 | 305 ms | **23×** |
 | Python dada2 | 10 | 310 ms | **22×** |
 
 ### 100 000 paired reads (same hardware)
@@ -60,7 +60,7 @@ R dada2's RAM comes from holding multiple copies of reads as reference-counted R
 
 ### Criterion micro-benchmarks (Raspberry Pi 5 / aarch64, 4 cores)
 
-Measured with `cargo bench --package dada2-core --bench pipeline`.
+Measured with `cargo bench --package speeddada-core --bench pipeline`.
 
 | Stage | Input | Median time | Throughput |
 |---|---|---|---|
@@ -86,7 +86,7 @@ Measured with `cargo bench --package dada2-core --bench pipeline`.
 dada2_rust/
 ├── Cargo.toml                     # workspace root (edition 2021, MSRV 1.78)
 ├── crates/
-│   ├── dada2-core/                # pure Rust library — no Python/R dependency
+│   ├── speeddada-core/                # pure Rust library — no Python/R dependency
 │   │   └── src/
 │   │       ├── lib.rs             # Dada2Error, Phred, Kmer newtypes; bytes_to_hex
 │   │       ├── quality_profile.rs # per-cycle quality statistics
@@ -104,19 +104,19 @@ dada2_rust/
 │   │       └── io/
 │   │           ├── fastq.rs       # streaming FASTQ parser (needletail)
 │   │           └── fasta.rs       # FASTA reference reader
-│   ├── dada2-py/                  # PyO3 bindings → `dada2` Python module
+│   ├── speeddada-py/                  # PyO3 bindings → `speeddada` Python module
 │   │   ├── Cargo.toml
 │   │   ├── pyproject.toml
 │   │   └── src/
 │   │       ├── lib.rs             # #[pymodule] registration
 │   │       ├── functions.rs       # #[pyfunction] items
 │   │       └── types.rs           # #[pyclass] structs
-│   └── dada2-r/                   # extendr-api bindings → compiled into dada2rs.so
+│   └── speeddada-r/                   # extendr-api bindings → compiled into SpeedDada.so
 │       ├── Cargo.toml
 │       └── src/lib.rs
 ├── r-package/
-│   └── dada2rs/                   # R package source (DESCRIPTION, NAMESPACE, R/)
-│       └── R/dada2rs.R            # R wrapper functions (drop-in for dada2)
+│   └── SpeedDada/                   # R package source (DESCRIPTION, NAMESPACE, R/)
+│       └── R/SpeedDada.R            # R wrapper functions (drop-in for dada2)
 ├── tests/
 │   ├── integration/
 │   │   └── pipeline_test.rs       # 1 000 synthetic reads → ASV recovery
@@ -127,7 +127,7 @@ dada2_rust/
 └── benchmarks/
     ├── sim_fastq.py               # simulate 16S V3-V4 paired FASTQs
     ├── bench_r.R                  # R dada2 benchmark
-    ├── bench_dada2rs.R            # dada2rs benchmark
+    ├── bench_speeddada.R            # SpeedDada benchmark
     ├── bench_rust.py              # Python dada2 benchmark
     └── compare.py                 # three-way comparison table
 ```
@@ -199,7 +199,7 @@ cargo test --workspace          # 27 unit tests + 1 integration test
 ### Python extension (development install)
 
 ```bash
-cd crates/dada2-py
+cd crates/speeddada-py
 maturin develop --release
 # or with uv:
 uv run maturin develop --release
@@ -218,7 +218,7 @@ VIRTUAL_ENV=/path/to/.venv maturin develop --release
 cargo build --release --workspace
 
 # Install to user library
-cd r-package/dada2rs
+cd r-package/SpeedDada
 R CMD INSTALL --library=~/R/library .
 ```
 
@@ -227,15 +227,15 @@ R CMD INSTALL --library=~/R/library .
 ## Python API
 
 ```python
-import dada2
+import speeddada
 
-dada2.__version__        # "0.1.0"
-dada2.init_logging()     # enable Rust-level log output (default level: "info")
+speeddada.__version__        # "0.99.0"
+speeddada.init_logging()     # enable Rust-level log output (default level: "info")
 
 # Auto-detect optimal thread count from available cores and RAM
-n_threads, ram_mb = dada2.configure_runtime()   # returns (4, 6959) on RPi5
-# Override thread count: dada2.configure_runtime(n_threads=2)
-# Override RAM-per-thread budget (MiB): dada2.configure_runtime(mb_per_thread=800)
+n_threads, ram_mb = speeddada.configure_runtime()   # returns (4, 6959) on RPi5
+# Override thread count: speeddada.configure_runtime(n_threads=2)
+# Override RAM-per-thread budget (MiB): speeddada.configure_runtime(mb_per_thread=800)
 ```
 
 ### Classes
@@ -256,10 +256,10 @@ n_threads, ram_mb = dada2.configure_runtime()   # returns (4, 6959) on RPi5
 
 ```python
 # Quality inspection
-profile = dada2.quality_profile("sample.fastq", n_reads=500_000)
+profile = speeddada.quality_profile("sample.fastq", n_reads=500_000)
 
 # Primer trimming (optional)
-stats = dada2.trim_primers(
+stats = speeddada.trim_primers(
     fwd_primer=b"GTGYCAGCMGCCGCGGTAA",
     rev_primer=b"GGACTACNVGGGTWTCTAAT",
     input_path="raw.fastq",
@@ -269,12 +269,12 @@ stats = dada2.trim_primers(
 )
 
 # Filter (single-end)
-cfg   = dada2.FilterConfig(trunc_len=250, min_len=20, max_ee=2.0)
-stats = dada2.filter_and_trim(cfg, "raw.fastq", "filtered.fastq")
+cfg   = speeddada.FilterConfig(trunc_len=250, min_len=20, max_ee=2.0)
+stats = speeddada.filter_and_trim(cfg, "raw.fastq", "filtered.fastq")
 # → FilterStats
 
 # Filter (paired-end, lock-step — R1 and R2 are kept in sync)
-stats = dada2.filter_and_trim_paired(
+stats = speeddada.filter_and_trim_paired(
     cfg_fwd, cfg_rev,
     "R1.fastq", "R2.fastq",
     "filt_R1.fastq", "filt_R2.fastq",
@@ -282,19 +282,19 @@ stats = dada2.filter_and_trim_paired(
 # → FilterStatsPaired
 
 # Error model (pass all per-direction filtered files together)
-model = dada2.learn_errors(["filt_R1.fastq", "filt_R2.fastq"], n_reads=1_000_000)
+model = speeddada.learn_errors(["filt_R1.fastq", "filt_R2.fastq"], n_reads=1_000_000)
 # → ErrorModel
 
 # Dereplicate (one file at a time)
-derep = dada2.derep_fastq("filtered.fastq")
+derep = speeddada.derep_fastq("filtered.fastq")
 # → list[tuple[bytes, int]]  — (sequence, abundance)
 
 # Denoise (per-sample)
-result = dada2.dada(derep, model, omega_a=1e-40)
+result = speeddada.dada(derep, model, omega_a=1e-40)
 # → DadaResult
 
 # Denoise (pooled across samples — shares evidence across all samples)
-results = dada2.dada_pooled(
+results = speeddada.dada_pooled(
     [derep_s1, derep_s2, derep_s3],   # each is list[tuple[bytes, int]]
     model,
     omega_a=1e-40,
@@ -302,17 +302,17 @@ results = dada2.dada_pooled(
 # → list[DadaResult]
 
 # Merge paired ends
-merged = dada2.merge_pairs(fwd_result, rev_result, min_overlap=20)
+merged = speeddada.merge_pairs(fwd_result, rev_result, min_overlap=20)
 # → list[MergedRead]  — .sequence, .abundance, .nmatch, .nmismatch, .nindel
 
 # Remove chimeras (pass sequence+abundance pairs)
-clean = dada2.remove_bimera_denovo(
+clean = speeddada.remove_bimera_denovo(
     [(m.sequence, m.abundance) for m in merged]
 )
 # → list[tuple[bytes, int]]
 
 # Assign taxonomy (pass sequences only)
-assignments = dada2.assign_taxonomy(
+assignments = speeddada.assign_taxonomy(
     [seq for seq, _ in clean],
     "silva_138.fasta",
     lineage_tsv="silva_138_lineage.tsv",  # optional; falls back to FASTA description field
@@ -321,14 +321,14 @@ assignments = dada2.assign_taxonomy(
 # → list[TaxonAssignment]
 
 # Build sample × ASV count matrix
-table = dada2.make_sequence_table(
+table = speeddada.make_sequence_table(
     sample_names=["s1", "s2"],
     results=[result_s1, result_s2],
 )
 table.to_tsv("asv_table.tsv")
 
 # One-shot pipeline (filter → learn → derep → denoise → chimera)
-asv_map = dada2.run_pipeline(
+asv_map = speeddada.run_pipeline(
     input_paths=["sample1.fastq", "sample2.fastq"],
     output_dir="/tmp/filtered",
     trunc_len=250,
@@ -341,14 +341,14 @@ asv_map = dada2.run_pipeline(
 ### Typical paired-end workflow
 
 ```python
-import dada2
+import speeddada
 
-dada2.init_logging()
+speeddada.init_logging()
 
 # 1. Filter both reads in lock-step
-cfg_fwd = dada2.FilterConfig(trunc_len=230, min_len=150, max_ee=3.0)
-cfg_rev = dada2.FilterConfig(trunc_len=210, min_len=150, max_ee=5.0)
-stats = dada2.filter_and_trim_paired(
+cfg_fwd = speeddada.FilterConfig(trunc_len=230, min_len=150, max_ee=3.0)
+cfg_rev = speeddada.FilterConfig(trunc_len=210, min_len=150, max_ee=5.0)
+stats = speeddada.filter_and_trim_paired(
     cfg_fwd, cfg_rev,
     "R1.fastq", "R2.fastq",
     "filt_R1.fastq", "filt_R2.fastq",
@@ -356,28 +356,28 @@ stats = dada2.filter_and_trim_paired(
 print(f"{stats.pairs_out}/{stats.reads_in} pairs passed")
 
 # 2. Learn errors (use filtered reads from both directions)
-model = dada2.learn_errors(["filt_R1.fastq", "filt_R2.fastq"])
+model = speeddada.learn_errors(["filt_R1.fastq", "filt_R2.fastq"])
 
 # 3. Dereplicate
-derep_fwd = dada2.derep_fastq("filt_R1.fastq")
-derep_rev = dada2.derep_fastq("filt_R2.fastq")
+derep_fwd = speeddada.derep_fastq("filt_R1.fastq")
+derep_rev = speeddada.derep_fastq("filt_R2.fastq")
 
 # 4. Denoise
-result_fwd = dada2.dada(derep_fwd, model)
-result_rev = dada2.dada(derep_rev, model)
+result_fwd = speeddada.dada(derep_fwd, model)
+result_rev = speeddada.dada(derep_rev, model)
 print(f"{len(result_fwd)} fwd ASVs, {len(result_rev)} rev ASVs")
 
 # 5. Merge paired ends
-merged = dada2.merge_pairs(result_fwd, result_rev, min_overlap=12)
+merged = speeddada.merge_pairs(result_fwd, result_rev, min_overlap=12)
 print(f"{len(merged)} merged ASVs  (nmatch range: "
       f"{min(m.nmatch for m in merged)}–{max(m.nmatch for m in merged)})")
 
 # 6. Remove chimeras
-clean = dada2.remove_bimera_denovo([(m.sequence, m.abundance) for m in merged])
+clean = speeddada.remove_bimera_denovo([(m.sequence, m.abundance) for m in merged])
 print(f"{len(clean)} non-chimeric ASVs")
 
 # 7. Assign taxonomy
-taxa = dada2.assign_taxonomy(
+taxa = speeddada.assign_taxonomy(
     [seq for seq, _ in clean],
     "silva_138.fasta",
     lineage_tsv="silva_138_lineage.tsv",
@@ -386,15 +386,15 @@ for t in taxa:
     print(f"  {t.genus or 'unclassified'}  conf={t.confidence:.2f}")
 
 # 8. Build sequence table
-table = dada2.make_sequence_table(["sample1"], [result_fwd])
+table = speeddada.make_sequence_table(["sample1"], [result_fwd])
 table.to_tsv("asv_table.tsv")
 ```
 
 ---
 
-## R API (`dada2rs`)
+## R API (`SpeedDada`)
 
-`dada2rs` is a drop-in replacement for the R `dada2` package. Function signatures mirror R dada2 exactly; extra arguments are accepted and silently ignored for compatibility.
+`SpeedDada` is a drop-in replacement for the R `dada2` package. Function signatures mirror R dada2 exactly; extra arguments are accepted and silently ignored for compatibility.
 
 ### Install
 
@@ -404,14 +404,14 @@ cd /path/to/dada2_rust
 cargo build --release --workspace
 
 # Install the R package
-cd r-package/dada2rs
+cd r-package/SpeedDada
 R CMD INSTALL --library=~/R/library .
 ```
 
 Or from an R session:
 
 ```r
-install.packages("path/to/r-package/dada2rs", repos = NULL, type = "source",
+install.packages("path/to/r-package/SpeedDada", repos = NULL, type = "source",
                  INSTALL_opts = "--library=~/R/library")
 ```
 
@@ -430,7 +430,7 @@ install.packages("path/to/r-package/dada2rs", repos = NULL, type = "source",
 ### Typical workflow
 
 ```r
-library(dada2rs)
+library(SpeedDada)
 
 # 1. Filter
 fstats <- filterAndTrim(
@@ -495,7 +495,7 @@ Every CPU-bound Python function calls `py.allow_threads(|| { … })` before ente
 `hamming_distance`, `first_mismatch`, and `range_equal` are scalar loops that LLVM reliably auto-vectorises to AVX2 / NEON when compiled with `target-cpu=native`. `chimera.rs`, `merge.rs`, and `primer.rs` delegate to these primitives.
 
 ### Rayon parallelism and hardware-aware configuration
-`RuntimeConfig::detect()` (exposed as `dada2.configure_runtime()` in Python) reads `available_parallelism()` for the CPU count and `MemAvailable` from `/proc/meminfo` to cap the rayon thread count at `min(n_cpu, ram_mb / mb_per_thread)`. The default budget is **512 MiB per thread**; pass `mb_per_thread=800` for DADA-heavy workloads or `mb_per_thread=64` for filter/taxonomy-only runs. The config is applied via `rayon::ThreadPoolBuilder::build_global()` at startup.
+`RuntimeConfig::detect()` (exposed as `speeddada.configure_runtime()` in Python) reads `available_parallelism()` for the CPU count and `MemAvailable` from `/proc/meminfo` to cap the rayon thread count at `min(n_cpu, ram_mb / mb_per_thread)`. The default budget is **512 MiB per thread**; pass `mb_per_thread=800` for DADA-heavy workloads or `mb_per_thread=64` for filter/taxonomy-only runs. The config is applied via `rayon::ThreadPoolBuilder::build_global()` at startup.
 
 Parallel stages:
 - **Pipeline level:** `run_pipeline` filters all input samples in parallel, then dereplicates and denoises each sample in parallel.
@@ -523,7 +523,7 @@ cargo test --workspace
 ### Python smoke tests
 
 ```bash
-cd crates/dada2-py
+cd crates/speeddada-py
 pytest tests/
 # 4 tests: version semver, filter_and_trim, learn_errors, dada + remove_bimera_denovo round-trip
 ```
@@ -543,7 +543,7 @@ python tests/parity/compare_r_output.py rust_output.json
 
 ```bash
 # Criterion micro-benchmarks (merge, taxonomy build/classify, dada denoise)
-cargo bench --package dada2-core --bench pipeline
+cargo bench --package speeddada-core --bench pipeline
 # HTML reports written to target/criterion/
 
 # Full pipeline comparison vs R dada2
@@ -553,7 +553,7 @@ python benchmarks/sim_fastq.py
 
 # 2. Run each tool (JSON results written to /tmp/bench_out/)
 Rscript  benchmarks/bench_r.R           # R dada2 (reference)
-Rscript  benchmarks/bench_dada2rs.R     # dada2rs R binding
+Rscript  benchmarks/bench_speeddada.R     # SpeedDada R binding
 python   benchmarks/bench_rust.py       # Python dada2 binding
 
 # 3. Print three-way comparison table
@@ -627,6 +627,67 @@ Compatible with SILVA (`tax_slv_ssu_*.txt`) and GTDB lineage files. If `lineage_
 
 - **Error model learning** uses self-alignment (only match transitions are accumulated). Mismatch rates fall back to a logistic prior (`sigmoid(-5 + 0.1q)`), which overestimates error probability by ~100× compared to the Phred definition. The DADA denoising step remains correct because the greedy promotion threshold is set high enough (ω_A = 1e-40), but the learned model will not match R dada2's error plots.
 - **`dada` quality scores** — the bindings pass per-position quality averages computed during dereplication. If a unique sequence was observed with varying quality, the mean is used.
-- **`selfConsist` mode** — not implemented; `dada2rs` emits a warning and falls back to single-pass denoising.
-- **`pool="pseudo"`** — not implemented; falls back to `pool=FALSE`.
-- **Vectorised sample input** — `dada()`, `derep_fastq()`, and `filter_and_trim()` each process one sample at a time. For multi-sample workflows, loop over samples explicitly or use `dada_pooled()` for cross-sample pooled denoising.
+- **`selfConsist` mode** — not implemented; `SpeedDada` emits a warning and falls back to single-pass denoising.
+- **Vectorised sample input** — `dada()`, `derep_fastq()`, and `filter_and_trim()` each process one sample at a time per call. For multi-sample workflows, use the dedicated `dada_many()`, `dada_pooled()`, or `dada_pseudo()` entry points (Python) / pass a *list* of `derep` objects to `dada()` (R) — both fan out across the Rayon thread pool.
+
+---
+
+## Cross-platform support
+
+speed-dada builds on every mainstream architecture out of the box:
+
+| OS / Arch              | Pre-built Python wheel | Source build (R + Python) |
+|------------------------|:----------------------:|:-------------------------:|
+| Linux x86_64           | ✅                     | ✅                        |
+| Linux aarch64          | ✅                     | ✅                        |
+| macOS x86_64           | ✅                     | ✅                        |
+| macOS arm64            | ✅                     | ✅                        |
+| Windows x86_64         | ✅                     | ✅                        |
+| Raspberry Pi 5 (aarch64) | ✅ (Linux aarch64)    | ✅                        |
+
+For platforms without a wheel, the source build needs only Rust (install
+via [rustup](https://rustup.rs)) and the language toolchain (R ≥ 4.1 or
+Python ≥ 3.9). Windows builds use Rtools' MinGW64 toolchain via
+`configure.win`.
+
+---
+
+## Installation (end-user quick path)
+
+```bash
+# Python
+pip install speeddada
+```
+
+```r
+# R — Bioconductor (planned)
+BiocManager::install("SpeedDada")
+# R — Github (current source install)
+remotes::install_github("Genedance/speed-dada", subdir = "r-package/SpeedDada")
+```
+
+See the **Building** section above for development builds and the
+per-package READMEs (`crates/speeddada-py/README.md`,
+`r-package/SpeedDada/README.md`) for ecosystem-specific guides.
+
+---
+
+## Citation
+
+If you use **speed-dada** in a publication, please cite both the original
+DADA2 paper and this package. Programmatic citations:
+
+```r
+citation("SpeedDada")                                       # R
+```
+
+```python
+# Python: see CITATION.cff at the repository root
+```
+
+---
+
+## License
+
+MIT © 2026 **Genedance GmbH**. Author: **Alexandre Jousset**
+(<info@genedance.com>). See [`LICENSE`](./LICENSE) for the full text.

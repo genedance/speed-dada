@@ -1,9 +1,9 @@
 #!/usr/bin/env Rscript
-# Minimal end-to-end test for dada2rs drop-in compatibility.
+# Minimal end-to-end test for SpeedDada drop-in compatibility.
 # Mirrors the bench_r.R pipeline using the Rust-backed package.
 
 .libPaths(c(path.expand("~/R/library"), .libPaths()))
-library(dada2rs)
+library(SpeedDada)
 
 # ── Generate synthetic paired FASTQs ─────────────────────────────────────────
 

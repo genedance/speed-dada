@@ -58,7 +58,11 @@ impl PoolStore {
     ///
     /// # Errors
     /// Returns [`Dada2Error::Io`] on flush failure.
-    pub fn add_sample(&mut self, sample_idx: usize, uniques: &[UniqueSeq]) -> Result<(), Dada2Error> {
+    pub fn add_sample(
+        &mut self,
+        sample_idx: usize,
+        uniques: &[UniqueSeq],
+    ) -> Result<(), Dada2Error> {
         for u in uniques {
             let entry = self.mem.entry(u.seq.clone()).or_insert_with(|| PoolEntry {
                 total_count: 0,
@@ -85,7 +89,10 @@ impl PoolStore {
         if self.mem.is_empty() {
             return Ok(());
         }
-        let chunk_path = self.dir.path().join(format!("chunk_{}.bin", self.chunks.len()));
+        let chunk_path = self
+            .dir
+            .path()
+            .join(format!("chunk_{}.bin", self.chunks.len()));
         let mut f = BufWriter::new(fs::File::create(&chunk_path)?);
         for (seq, entry) in &self.mem {
             bincode::serialize_into(&mut f, &(seq, entry))
@@ -141,7 +148,9 @@ impl PoolStore {
 
         let mut sorted: Vec<(Vec<u8>, PoolEntry)> = merged.into_iter().collect();
         sorted.sort_unstable_by(|a, b| {
-            b.1.total_count.cmp(&a.1.total_count).then_with(|| a.0.cmp(&b.0))
+            b.1.total_count
+                .cmp(&a.1.total_count)
+                .then_with(|| a.0.cmp(&b.0))
         });
 
         let mut uniques = Vec::with_capacity(sorted.len());
@@ -149,7 +158,11 @@ impl PoolStore {
 
         for (seq, entry) in sorted {
             let qual_sum = entry.qual_sum.clone();
-            uniques.push(UniqueSeq { seq, count: entry.total_count, qual_sum });
+            uniques.push(UniqueSeq {
+                seq,
+                count: entry.total_count,
+                qual_sum,
+            });
             entries.push(entry);
         }
 

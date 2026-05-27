@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run only dada2rs + Python benchmarks (R dada2 skipped).
+# Run only speeddada + Python benchmarks (R dada2 skipped).
 # Usage: ./run_rust_only.sh [THREADS]
 set -uo pipefail
 
@@ -9,7 +9,7 @@ WORKSPACE="$(cd "$HERE/../.." && pwd)"
 OUT_BASE=/tmp/bench_field_out
 IN_DIR=/Users/alex/Downloads/raw_data_FIELD
 
-mkdir -p "$OUT_BASE"/{dada2rs,python}
+mkdir -p "$OUT_BASE"/{speeddada,python}
 
 run_with_rss() {
     local label="$1"; shift
@@ -26,12 +26,12 @@ run_with_rss() {
     echo
 }
 
-# 1. dada2rs (Rust R binding) — native pseudo via wrap__dada_pseudo
-run_with_rss "dada2rs" \
-    "$OUT_BASE/dada2rs/rss.txt" \
-    "$OUT_BASE/dada2rs/log.txt" \
+# 1. speeddada (Rust R binding) — native pseudo via wrap__dada_pseudo
+run_with_rss "speeddada" \
+    "$OUT_BASE/speeddada/rss.txt" \
+    "$OUT_BASE/speeddada/log.txt" \
     env RAYON_NUM_THREADS="$THREADS" \
-    Rscript "$HERE/bench_dada2rs.R" "$THREADS" "$IN_DIR" "$OUT_BASE/dada2rs"
+    Rscript "$HERE/bench_speeddada.R" "$THREADS" "$IN_DIR" "$OUT_BASE/speeddada"
 
 # 2. Python dada2 — native dada_pseudo
 run_with_rss "Python dada2" \

@@ -21,9 +21,7 @@ const MIN_ARM_LEN: usize = 8;
 ///
 /// # Errors
 /// Always succeeds; returns `Ok` for API uniformity.
-pub fn remove_bimera_denovo(
-    seqs: &[(Vec<u8>, u32)],
-) -> Result<Vec<(Vec<u8>, u32)>, Dada2Error> {
+pub fn remove_bimera_denovo(seqs: &[(Vec<u8>, u32)]) -> Result<Vec<(Vec<u8>, u32)>, Dada2Error> {
     let n_in = seqs.len();
     // Sort descending by abundance (stable for determinism)
     let mut sorted = seqs.to_vec();
@@ -58,12 +56,7 @@ pub fn remove_bimera_denovo(
 /// where both parents have abundance strictly greater than `min_abund`.
 ///
 /// Operates directly on the sorted slice to avoid per-sequence Vec allocations.
-fn is_bimera(
-    candidate: &[u8],
-    sorted: &[(Vec<u8>, u32)],
-    limit: usize,
-    min_abund: u32,
-) -> bool {
+fn is_bimera(candidate: &[u8], sorted: &[(Vec<u8>, u32)], limit: usize, min_abund: u32) -> bool {
     for i in 0..limit {
         if sorted[i].1 <= min_abund {
             continue;
@@ -122,11 +115,7 @@ mod tests {
         // Bimera: first 10 from p1, last 10 from p2 = p2 in this case
         let bimera: Vec<u8> = [&p1[..10], &p2[10..]].concat();
 
-        let seqs = vec![
-            (p1, 1000),
-            (p2, 900),
-            (bimera, 50),
-        ];
+        let seqs = vec![(p1, 1000), (p2, 900), (bimera, 50)];
         let result = remove_bimera_denovo(&seqs).unwrap();
         // Bimera should be removed
         assert_eq!(result.len(), 2, "bimera should have been removed");

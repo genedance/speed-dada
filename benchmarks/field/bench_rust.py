@@ -15,7 +15,7 @@ import json
 import time
 from pathlib import Path
 
-import dada2
+import speeddada as dada2
 
 
 def main():

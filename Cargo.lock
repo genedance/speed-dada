@@ -313,43 +313,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
-name = "dada2-core"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "criterion",
- "env_logger",
- "log",
- "ndarray",
- "needletail",
- "rayon",
- "serde",
- "serde_json",
- "statrs",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "dada2-py"
-version = "0.1.0"
-dependencies = [
- "dada2-core",
- "env_logger",
- "pyo3",
- "rayon",
- "serde_json",
-]
-
-[[package]]
-name = "dada2-r"
-version = "0.1.0"
-dependencies = [
- "dada2-core",
- "extendr-api",
-]
-
-[[package]]
 name = "either"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1218,6 +1181,43 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+
+[[package]]
+name = "speeddada-core"
+version = "0.99.0"
+dependencies = [
+ "bincode",
+ "criterion",
+ "env_logger",
+ "log",
+ "ndarray",
+ "needletail",
+ "rayon",
+ "serde",
+ "serde_json",
+ "statrs",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "speeddada-py"
+version = "0.99.0"
+dependencies = [
+ "env_logger",
+ "pyo3",
+ "rayon",
+ "serde_json",
+ "speeddada-core",
+]
+
+[[package]]
+name = "speeddada-r"
+version = "0.99.0"
+dependencies = [
+ "extendr-api",
+ "speeddada-core",
+]
 
 [[package]]
 name = "statrs"

@@ -9,7 +9,7 @@
 //! a 32× reduction that keeps the entire database in L3 cache for realistic
 //! reference set sizes.
 
-use crate::{Dada2Error, Kmer, io::fasta::FastaRecord};
+use crate::{io::fasta::FastaRecord, Dada2Error, Kmer};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::Path;
@@ -57,7 +57,11 @@ pub struct TaxonomyConfig {
 
 impl Default for TaxonomyConfig {
     fn default() -> Self {
-        Self { k: DEFAULT_K, threshold: DEFAULT_THRESHOLD, seed: 42 }
+        Self {
+            k: DEFAULT_K,
+            threshold: DEFAULT_THRESHOLD,
+            seed: 42,
+        }
     }
 }
 
@@ -93,7 +97,9 @@ impl TaxonomyDb {
             return Err(Dada2Error::InvalidInput("k must be <= 16".into()));
         }
         if records.is_empty() {
-            return Err(Dada2Error::InvalidInput("reference database is empty".into()));
+            return Err(Dada2Error::InvalidInput(
+                "reference database is empty".into(),
+            ));
         }
 
         #[allow(clippy::cast_possible_truncation)]
@@ -113,7 +119,13 @@ impl TaxonomyDb {
             })
             .unzip();
 
-        Ok(Self { k: cfg.k, n_words, labels, bits, lineages: lineages.clone() })
+        Ok(Self {
+            k: cfg.k,
+            n_words,
+            labels,
+            bits,
+            lineages: lineages.clone(),
+        })
     }
 
     /// Classify a collection of ASV sequences.
@@ -141,7 +153,9 @@ impl TaxonomyDb {
 
     fn classify_one(&self, seq: &[u8], cfg: &TaxonomyConfig) -> TaxonAssignment {
         fn get(lin: Option<&Vec<String>>, i: usize) -> Option<String> {
-            lin.and_then(|l| l.get(i)).filter(|s| !s.is_empty()).cloned()
+            lin.and_then(|l| l.get(i))
+                .filter(|s| !s.is_empty())
+                .cloned()
         }
 
         // Build query bitset once; reuse bootstrap buffer.
@@ -189,7 +203,11 @@ impl TaxonomyDb {
             class: get(lineage, 2),
             order: get(lineage, 3),
             family: get(lineage, 4),
-            genus: if confidence >= cfg.threshold { get(lineage, 5) } else { None },
+            genus: if confidence >= cfg.threshold {
+                get(lineage, 5)
+            } else {
+                None
+            },
             species: None,
             confidence,
         }
@@ -250,13 +268,16 @@ pub fn load_lineage_tsv(path: &Path) -> Result<HashMap<String, Vec<String>>, Dad
             continue;
         }
         let mut parts = line.splitn(2, '\t');
-        let seq_id = parts.next().ok_or_else(|| {
-            Dada2Error::Parse(format!("missing seq_id on line {}", line_num + 1))
-        })?;
+        let seq_id = parts
+            .next()
+            .ok_or_else(|| Dada2Error::Parse(format!("missing seq_id on line {}", line_num + 1)))?;
         let lineage_str = parts.next().ok_or_else(|| {
             Dada2Error::Parse(format!("missing lineage on line {}", line_num + 1))
         })?;
-        let lineage: Vec<String> = lineage_str.split(';').map(|s| s.trim().to_owned()).collect();
+        let lineage: Vec<String> = lineage_str
+            .split(';')
+            .map(|s| s.trim().to_owned())
+            .collect();
         map.insert(seq_id.to_owned(), lineage);
     }
 
@@ -300,14 +321,17 @@ fn encode_kmer(slice: &[u8], _k: usize) -> Option<Kmer> {
     Some(Kmer(val))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::io::fasta::FastaRecord;
 
     fn make_ref(id: &str, seq: &str, lineage: &[&str]) -> (FastaRecord, (String, Vec<String>)) {
-        let rec = FastaRecord { id: id.into(), description: None, seq: seq.bytes().collect() };
+        let rec = FastaRecord {
+            id: id.into(),
+            description: None,
+            seq: seq.bytes().collect(),
+        };
         let lin = lineage.iter().map(|s| (*s).to_owned()).collect();
         (rec, (id.to_string(), lin))
     }
@@ -334,17 +358,41 @@ mod tests {
         let (r1, (id1, l1)) = make_ref(
             "seq1",
             "ACGTACGTACGTACGTACGTACGTACGT",
-            &["Bacteria", "Firmicutes", "Bacilli", "Lactobacillales", "Lactobacillaceae", "Lactobacillus", "acidophilus"],
+            &[
+                "Bacteria",
+                "Firmicutes",
+                "Bacilli",
+                "Lactobacillales",
+                "Lactobacillaceae",
+                "Lactobacillus",
+                "acidophilus",
+            ],
         );
         let (r2, (id2, l2)) = make_ref(
             "seq2",
             "TTTTTTTTTTTTTTTTTTTTTTTTTTTT",
-            &["Bacteria", "Proteobacteria", "Gammaproteobacteria", "Pseudomonadales", "Pseudomonadaceae", "Pseudomonas", "aeruginosa"],
+            &[
+                "Bacteria",
+                "Proteobacteria",
+                "Gammaproteobacteria",
+                "Pseudomonadales",
+                "Pseudomonadaceae",
+                "Pseudomonas",
+                "aeruginosa",
+            ],
         );
         let (r3, (id3, l3)) = make_ref(
             "seq3",
             "CCCCCCCCCCCCCCCCCCCCCCCCCCCC",
-            &["Bacteria", "Bacteroidetes", "Bacteroidia", "Bacteroidales", "Bacteroidaceae", "Bacteroides", "fragilis"],
+            &[
+                "Bacteria",
+                "Bacteroidetes",
+                "Bacteroidia",
+                "Bacteroidales",
+                "Bacteroidaceae",
+                "Bacteroides",
+                "fragilis",
+            ],
         );
 
         let records = vec![r1, r2, r3];

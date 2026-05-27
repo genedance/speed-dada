@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run all four benchmarks (R dada2, dada2rs, Python dada2, rust-only CLI)
+# Run all four benchmarks (R dada2, speeddada, Python dada2, rust-only CLI)
 # on the 3 JHI paired samples, capturing peak RSS via /usr/bin/time -l.
 # Usage: ./run_all.sh [THREADS] [IN_DIR]
 set -uo pipefail
@@ -10,7 +10,7 @@ WORKSPACE="$(cd "$HERE/../.." && pwd)"
 OUT_BASE=/tmp/bench_jhi_out
 IN_DIR="${2:-/Users/alex/Library/CloudStorage/OneDrive-Genedance/Genedance Corp - Documents/customer_data/COUSIN/BZ20260129886761-799F-1193R-Data-20260316/rawData}"
 
-mkdir -p "$OUT_BASE"/{r,dada2rs,python,rust_only}
+mkdir -p "$OUT_BASE"/{r,speeddada,python,rust_only}
 
 run_with_rss() {
     local label="$1"; shift
@@ -32,12 +32,12 @@ run_with_rss "R dada2" \
     "$OUT_BASE/r/log.txt" \
     Rscript "$HERE/bench_r.R" "$THREADS" "$IN_DIR" "$OUT_BASE/r"
 
-# 2. dada2rs (Rust core via R binding)
-run_with_rss "dada2rs" \
-    "$OUT_BASE/dada2rs/rss.txt" \
-    "$OUT_BASE/dada2rs/log.txt" \
+# 2. speeddada (Rust core via R binding)
+run_with_rss "speeddada" \
+    "$OUT_BASE/speeddada/rss.txt" \
+    "$OUT_BASE/speeddada/log.txt" \
     env RAYON_NUM_THREADS="$THREADS" \
-    Rscript "$HERE/bench_dada2rs.R" "$THREADS" "$IN_DIR" "$OUT_BASE/dada2rs"
+    Rscript "$HERE/bench_speeddada.R" "$THREADS" "$IN_DIR" "$OUT_BASE/speeddada"
 
 # 3. Python dada2 (Rust core via Python binding)
 run_with_rss "Python dada2" \

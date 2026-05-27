@@ -72,29 +72,25 @@ pub fn merge_pairs(
                 .iter()
                 .zip(rev_rcs.iter())
                 .filter_map(|(rev, rev_rc)| {
-                    find_overlap(
-                        &fwd.sequence,
-                        rev_rc,
-                        cfg.min_overlap,
-                        cfg.max_mismatches,
+                    find_overlap(&fwd.sequence, rev_rc, cfg.min_overlap, cfg.max_mismatches).map(
+                        |(overlap_len, n_mismatches)| {
+                            let sequence = if cfg.just_concatenate {
+                                let mut s = fwd.sequence.clone();
+                                s.extend_from_slice(rev_rc);
+                                s
+                            } else {
+                                let mut s = fwd.sequence.clone();
+                                s.extend_from_slice(&rev_rc[overlap_len..]);
+                                s
+                            };
+                            MergedRead {
+                                sequence,
+                                abundance: fwd.abundance.min(rev.abundance),
+                                overlap_len,
+                                n_mismatches,
+                            }
+                        },
                     )
-                    .map(|(overlap_len, n_mismatches)| {
-                        let sequence = if cfg.just_concatenate {
-                            let mut s = fwd.sequence.clone();
-                            s.extend_from_slice(rev_rc);
-                            s
-                        } else {
-                            let mut s = fwd.sequence.clone();
-                            s.extend_from_slice(&rev_rc[overlap_len..]);
-                            s
-                        };
-                        MergedRead {
-                            sequence,
-                            abundance: fwd.abundance.min(rev.abundance),
-                            overlap_len,
-                            n_mismatches,
-                        }
-                    })
                 })
                 .collect::<Vec<_>>()
         })
@@ -133,10 +129,7 @@ fn find_overlap(
 /// Compute the reverse complement of a nucleotide sequence.
 #[must_use]
 pub fn reverse_complement(seq: &[u8]) -> Vec<u8> {
-    seq.iter()
-        .rev()
-        .map(|&b| complement(b))
-        .collect()
+    seq.iter().rev().map(|&b| complement(b)).collect()
 }
 
 fn complement(b: u8) -> u8 {
@@ -165,13 +158,19 @@ mod tests {
     fn merge_with_known_overlap() {
         // fwd: ACGTACGT
         // rev: (RC of GTGTACGT = ACGTACAC) — overlap of 4 with fwd
-        let fwd_asv = Asv { sequence: b"ACGTACGT".to_vec(), abundance: 100 };
+        let fwd_asv = Asv {
+            sequence: b"ACGTACGT".to_vec(),
+            abundance: 100,
+        };
         let rev_asv = Asv {
             // RC of this will be ACGTACAC → overlap ACGT (4 bp) with fwd
             sequence: reverse_complement(b"ACGTACGT"),
             abundance: 100,
         };
-        let cfg = MergeConfig { min_overlap: 4, ..Default::default() };
+        let cfg = MergeConfig {
+            min_overlap: 4,
+            ..Default::default()
+        };
         let result = merge_pairs(&[fwd_asv], &[rev_asv], &cfg).unwrap();
         assert!(!result.is_empty());
     }

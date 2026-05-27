@@ -2,10 +2,10 @@
 WORKSPACE_ROOT = @WORKSPACE_ROOT@
 CARGO          = @CARGO@
 
-RUST_LIB = $(WORKSPACE_ROOT)/target/release/libdada2_r.a
+RUST_LIB = $(WORKSPACE_ROOT)/target/release/libspeeddada_r.a
 
 # Link the static Rust archive plus required system libraries.
-PKG_LIBS   = $(RUST_LIB) -lpthread @DL_LIB@ -lm -lbz2
+PKG_LIBS   = $(RUST_LIB) -lpthread @DL_LIB@ -lm @BZ_LIB@
 PKG_CFLAGS =
 
 all: $(SHLIB)
@@ -14,4 +14,4 @@ all: $(SHLIB)
 $(SHLIB): $(RUST_LIB)
 
 $(RUST_LIB):
-	cd $(WORKSPACE_ROOT) && $(CARGO) build --release -p dada2-r
+	cd $(WORKSPACE_ROOT) && $(CARGO) build --release -p speeddada-r

@@ -106,7 +106,10 @@ mod tests {
     use crate::dada::Asv;
 
     fn asv(seq: &str, abundance: u32) -> Asv {
-        Asv { sequence: seq.bytes().collect(), abundance }
+        Asv {
+            sequence: seq.bytes().collect(),
+            abundance,
+        }
     }
 
     #[test]

@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from collections import defaultdict
 
-import dada2
+import speeddada as dada2
 
 
 def main():

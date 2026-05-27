@@ -44,7 +44,10 @@ impl RuntimeConfig {
             None => n_cpu,
         };
 
-        Self { n_threads, mem_available_mb }
+        Self {
+            n_threads,
+            mem_available_mb,
+        }
     }
 
     /// Override the thread count manually (e.g. for testing or containers).
@@ -74,7 +77,9 @@ impl RuntimeConfig {
     /// validity of the error model.
     #[must_use]
     pub fn reads_per_file(n_reads: usize, n_files: usize, min_per_file: usize) -> usize {
-        if n_files == 0 { return n_reads; }
+        if n_files == 0 {
+            return n_reads;
+        }
         (n_reads / n_files).max(min_per_file)
     }
 }

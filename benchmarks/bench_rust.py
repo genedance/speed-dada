@@ -6,8 +6,7 @@ Pipeline: filter_and_trim_paired → learn_errors → derep_fastq → dada → m
 import json, sys, time
 from pathlib import Path
 
-sys.path.insert(0, str(Path("/home/fromage/dada2_test/.venv/lib/python3.11/site-packages")))
-import dada2
+import speeddada as dada2
 
 R1  = "/tmp/bench_fastq/R1.fastq"
 R2  = "/tmp/bench_fastq/R2.fastq"

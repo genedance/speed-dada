@@ -21,17 +21,14 @@ impl FastqRecord {
         if self.qual.is_empty() {
             return 0.0;
         }
-        let sum: f64 = self.qual.iter().map(|&q| f64::from(q.saturating_sub(33))).sum();
+        let sum: f64 = self
+            .qual
+            .iter()
+            .map(|&q| f64::from(q.saturating_sub(33)))
+            .sum();
         #[allow(clippy::cast_precision_loss)]
         let len = self.qual.len() as f64;
         sum / len
-    }
-
-    /// Truncate sequence and quality to `len` bases.
-    #[allow(dead_code)]
-    pub fn truncate(&mut self, len: usize) {
-        self.seq.truncate(len);
-        self.qual.truncate(len);
     }
 
     /// Return `true` if any window of `width` bases has mean quality < `min_q`.
@@ -42,7 +39,10 @@ impl FastqRecord {
         }
         self.qual.windows(width).any(|w| {
             #[allow(clippy::cast_precision_loss)]
-            let mean: f64 = w.iter().map(|&q| f64::from(q.saturating_sub(33))).sum::<f64>()
+            let mean: f64 = w
+                .iter()
+                .map(|&q| f64::from(q.saturating_sub(33)))
+                .sum::<f64>()
                 / w.len() as f64;
             mean < f64::from(min_q)
         })
@@ -100,8 +100,11 @@ pub fn read_fastq_n(path: &Path, n: usize) -> Result<Vec<FastqRecord>, Dada2Erro
                     .next()
                     .unwrap_or("")
                     .to_owned();
-                records.push(FastqRecord { id, seq: rec.seq().to_vec(),
-                    qual: rec.qual().map(<[u8]>::to_vec).unwrap_or_default() });
+                records.push(FastqRecord {
+                    id,
+                    seq: rec.seq().to_vec(),
+                    qual: rec.qual().map(<[u8]>::to_vec).unwrap_or_default(),
+                });
             }
         }
     }

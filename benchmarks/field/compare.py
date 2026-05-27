@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Three-way comparison of bench_r.R, bench_dada2rs.R, bench_rust.py."""
+"""Three-way comparison of bench_r.R, bench_speeddada.R, bench_rust.py."""
 import json
 import math
 import sys
@@ -8,7 +8,7 @@ from pathlib import Path
 BASE = Path("/tmp/bench_field_out")
 TOOLS = [
     ("R dada2",      BASE / "r"        / "r_output.json",        BASE / "r"        / "rss.txt"),
-    ("dada2rs",      BASE / "dada2rs"  / "dada2rs_output.json",  BASE / "dada2rs"  / "rss.txt"),
+    ("SpeedDada",      BASE / "SpeedDada"  / "speeddada_output.json",  BASE / "SpeedDada"  / "rss.txt"),
     ("Python dada2", BASE / "python"   / "rust_output.json",     BASE / "python"   / "rss.txt"),
 ]
 

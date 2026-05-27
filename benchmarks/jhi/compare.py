@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Four-way comparison: R dada2, dada2rs, Python dada2, rust-only CLI."""
+"""Four-way comparison: R dada2, SpeedDada, Python dada2, rust-only CLI."""
 import json
 import math
 import sys
@@ -8,7 +8,7 @@ from pathlib import Path
 BASE = Path("/tmp/bench_jhi_out")
 TOOLS = [
     ("R dada2",      BASE / "r"         / "r_output.json",         BASE / "r"         / "rss.txt"),
-    ("dada2rs",      BASE / "dada2rs"   / "dada2rs_output.json",   BASE / "dada2rs"   / "rss.txt"),
+    ("SpeedDada",      BASE / "SpeedDada"   / "speeddada_output.json",   BASE / "SpeedDada"   / "rss.txt"),
     ("Python dada2", BASE / "python"    / "rust_output.json",      BASE / "python"    / "rss.txt"),
     ("rust-only",    BASE / "rust_only" / "rust_only_output.json", BASE / "rust_only" / "rss.txt"),
 ]

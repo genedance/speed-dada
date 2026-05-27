@@ -1,18 +1,23 @@
 [package]
-name = "dada2-py"
+name              = "speeddada-py"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description       = "Python bindings for the speeddada DADA2 pipeline (Rust core via PyO3)."
+homepage.workspace   = true
+repository.workspace = true
 
 [lib]
-name = "dada2"
+name       = "_native"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3.workspace       = true
-rayon.workspace      = true
-dada2-core.workspace = true
-serde_json.workspace = true
-env_logger.workspace = true
+pyo3.workspace           = true
+rayon.workspace          = true
+speeddada-core.workspace = true
+serde_json.workspace     = true
+env_logger.workspace     = true
 
 [lints.clippy]
 pedantic = "warn"

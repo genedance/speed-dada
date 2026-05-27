@@ -1,9 +1,24 @@
-[build]
-# Enable native CPU feature detection so LLVM emits AVX2/NEON/SSE4 SIMD
-# for the auto-vectorised loops in align.rs.
-rustflags = ["-C", "target-cpu=native"]
+# Workspace-local cargo configuration.
+#
+# IMPORTANT: do NOT set `rustflags = ["-C", "target-cpu=native"]` here. That
+# was the previous default but it produces binaries that crash on any CPU
+# older than the build host and breaks cross-compilation for distributed
+# wheels. Native-CPU codegen is opt-in via the `bench` profile (cargo
+# build --profile bench) or by setting RUSTFLAGS on the command line, e.g.:
+#
+#     RUSTFLAGS="-C target-cpu=native" cargo build --release
+#
+# The auto-vectorised loops in `align.rs` still benefit from the per-target
+# baseline SIMD (SSE2 on x86_64, NEON on aarch64) without target-cpu=native.
 
 [profile.release]
-opt-level = 3
-lto = "thin"
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1
+
+# Native-CPU codegen for local benchmarking; never used for published builds.
+[profile.bench]
+inherits      = "release"
+opt-level     = 3
+lto           = "thin"
 codegen-units = 1

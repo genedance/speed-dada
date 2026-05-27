@@ -87,11 +87,23 @@ pub fn quality_profile(path: &Path, n_reads: usize) -> Result<QualityProfile, Da
         cycle_mean[i] = sum / total_f;
 
         // Percentiles via cumulative sum
-        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
         let p25_target = (total_f * 0.25).ceil() as u64;
-        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
         let p50_target = (total_f * 0.50).ceil() as u64;
-        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
         let p75_target = (total_f * 0.75).ceil() as u64;
 
         let mut cum = 0u64;
@@ -145,10 +157,7 @@ mod tests {
         let profile = quality_profile(f.path(), 0).unwrap();
         assert_eq!(profile.cycle_mean.len(), 20, "expected 20 cycles");
         for &mean in &profile.cycle_mean {
-            assert!(
-                (mean - 40.0).abs() < 0.01,
-                "expected mean 40.0, got {mean}"
-            );
+            assert!((mean - 40.0).abs() < 0.01, "expected mean 40.0, got {mean}");
         }
         assert_eq!(profile.n_reads, 10);
     }

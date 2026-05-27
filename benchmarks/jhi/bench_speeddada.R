@@ -1,16 +1,16 @@
 #!/usr/bin/env Rscript
-# Benchmark: dada2rs (Rust core via R extendr) on 3 paired JHI samples.
+# Benchmark: SpeedDada (Rust core via R extendr) on 3 paired JHI samples.
 
 .libPaths(c(path.expand("~/R/library"), .libPaths()))
 suppressPackageStartupMessages({
-  library(dada2rs)
+  library(SpeedDada)
   library(jsonlite)
 })
 
 args      <- commandArgs(trailingOnly = TRUE)
 n_threads <- if (length(args) >= 1) as.integer(args[1]) else 16L
 in_dir    <- if (length(args) >= 2) args[2] else stop("input dir required")
-out_dir   <- if (length(args) >= 3) args[3] else "/tmp/bench_jhi_out/dada2rs"
+out_dir   <- if (length(args) >= 3) args[3] else "/tmp/bench_jhi_out/SpeedDada"
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
 Sys.setenv(RAYON_NUM_THREADS = as.character(n_threads))
@@ -23,7 +23,7 @@ rev_filt <- file.path(out_dir, paste0(stems, "_R2_filt.fastq.gz"))
 names(fwd_filt) <- stems
 names(rev_filt) <- stems
 
-cat(sprintf("[dada2rs] RAYON_NUM_THREADS=%d  samples=%d\n",
+cat(sprintf("[SpeedDada] RAYON_NUM_THREADS=%d  samples=%d\n",
             n_threads, length(stems)))
 t_total <- proc.time()
 
@@ -81,7 +81,7 @@ cat(sprintf("  asvs_in=%d  asvs_out=%d  (%.1f ms)\n",
             ncol(seqtab), ncol(seqtab_clean), t_chimera))
 
 t_total_ms <- (proc.time() - t_total)[3] * 1000
-cat(sprintf("\nTotal dada2rs time: %.1f ms\n", t_total_ms))
+cat(sprintf("\nTotal SpeedDada time: %.1f ms\n", t_total_ms))
 
 sample_stats <- lapply(seq_along(stems), function(i) {
   list(sample = stems[i],
@@ -90,7 +90,7 @@ sample_stats <- lapply(seq_along(stems), function(i) {
 })
 
 result <- list(
-  tool       = "dada2rs",
+  tool       = "SpeedDada",
   n_threads  = n_threads,
   total_ms   = round(t_total_ms, 1),
   stages = list(
@@ -110,5 +110,5 @@ result <- list(
          abundance = as.integer(sum(seqtab_clean[, j]))))
 )
 writeLines(toJSON(result, auto_unbox = TRUE, pretty = TRUE),
-           file.path(out_dir, "dada2rs_output.json"))
-cat(sprintf("\nWrote %s\n", file.path(out_dir, "dada2rs_output.json")))
+           file.path(out_dir, "speeddada_output.json"))
+cat(sprintf("\nWrote %s\n", file.path(out_dir, "speeddada_output.json")))

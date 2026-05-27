@@ -10,7 +10,7 @@ WORKSPACE="$(cd "$HERE/../.." && pwd)"
 OUT_BASE=/tmp/bench_field_out
 IN_DIR=/Users/alex/Downloads/raw_data_FIELD
 
-mkdir -p "$OUT_BASE"/{r,dada2rs,python}
+mkdir -p "$OUT_BASE"/{r,speeddada,python}
 
 run_with_rss() {
     local label="$1"; shift
@@ -34,12 +34,12 @@ run_with_rss "R dada2" \
     "$OUT_BASE/r/log.txt" \
     Rscript "$HERE/bench_r.R" "$THREADS" "$IN_DIR" "$OUT_BASE/r"
 
-# 2. dada2rs (Rust R binding)
-run_with_rss "dada2rs" \
-    "$OUT_BASE/dada2rs/rss.txt" \
-    "$OUT_BASE/dada2rs/log.txt" \
+# 2. speeddada (Rust R binding)
+run_with_rss "speeddada" \
+    "$OUT_BASE/speeddada/rss.txt" \
+    "$OUT_BASE/speeddada/log.txt" \
     env RAYON_NUM_THREADS="$THREADS" \
-    Rscript "$HERE/bench_dada2rs.R" "$THREADS" "$IN_DIR" "$OUT_BASE/dada2rs"
+    Rscript "$HERE/bench_speeddada.R" "$THREADS" "$IN_DIR" "$OUT_BASE/speeddada"
 
 # 3. Python dada2 (Rust Python binding)
 run_with_rss "Python dada2" \

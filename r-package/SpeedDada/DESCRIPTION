@@ -1,14 +1,47 @@
-Package: dada2rs
+Package: SpeedDada
 Type: Package
-Title: Drop-in replacement for dada2 backed by a Rust core
-Version: 0.1.0
-Author: dada2-rs contributors
-Maintainer: dada2-rs contributors <noreply@example.com>
-Description: Provides filterAndTrim, learnErrors, derepFastq, dada,
-    mergePairs, makeSequenceTable, and removeBimeraDenovo using a
-    high-performance Rust implementation via extendr.
-    Compatible with the original R dada2 API (Callahan et al. 2016).
-License: MIT
-NeedsCompilation: yes
-SystemRequirements: Cargo (>= 1.78), Rust toolchain, libbz2
+Title: High-Performance Drop-In Replacement for DADA2 (Rust Core)
+Version: 0.99.0
+Authors@R: c(
+    person(given = "Alexandre",
+           family = "Jousset",
+           email = "info@genedance.com",
+           role = c("aut", "cre")),
+    person(given = "Genedance GmbH",
+           role = "cph"))
+Description: A drop-in replacement for the dada2 amplicon sequence variant
+    (ASV) pipeline (Callahan et al. 2016, <doi:10.1038/nmeth.3869>),
+    implemented in Rust and exposed via 'extendr'. Provides identical
+    'filterAndTrim', 'learnErrors', 'derepFastq', 'dada', 'mergePairs',
+    'makeSequenceTable', and 'removeBimeraDenovo' APIs, but typically
+    one to two orders of magnitude faster and with roughly ten-fold
+    lower peak memory through streaming dereplication, disk-backed
+    pooling, and compact bitset taxonomy profiles. Builds with the
+    user's Rust toolchain (rustup recommended) on Linux, macOS, and
+    Windows, including aarch64/ARM (Raspberry Pi).
+License: MIT + file LICENSE
+URL: https://github.com/Genedance/speed-dada
+BugReports: https://github.com/Genedance/speed-dada/issues
+Encoding: UTF-8
 Depends: R (>= 4.1.0)
+Imports:
+    stats
+Suggests:
+    knitr,
+    rmarkdown,
+    testthat (>= 3.0.0),
+    BiocStyle
+VignetteBuilder: knitr
+biocViews:
+    Metagenomics,
+    Microbiome,
+    Sequencing,
+    SequenceMatching,
+    SequenceQuality,
+    Software
+SystemRequirements:
+    Cargo (>= 1.78),
+    Rust toolchain (https://rustup.rs)
+NeedsCompilation: yes
+RoxygenNote: 7.3.3
+Config/testthat/edition: 3

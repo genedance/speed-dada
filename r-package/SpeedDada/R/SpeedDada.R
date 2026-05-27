@@ -1,7 +1,7 @@
-# dada2rs — drop-in R wrappers over Rust extendr bindings.
+# SpeedDada — drop-in R wrappers over Rust extendr bindings.
 # Each function mirrors the R dada2 API so existing scripts work unchanged.
 
-#' @useDynLib dada2rs, .registration = TRUE
+#' @useDynLib SpeedDada, .registration = TRUE
 NULL
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -19,26 +19,44 @@ NULL
     return(v)
   }
   if (is.integer(x) && !is.null(names(x))) return(x)
-  stop("dada2rs: unrecognised sample type in .get_uniques()")
+  stop("SpeedDada: unrecognised sample type in .get_uniques()")
+}
+
+# Resolve a bundled FASTQ fixture for examples / tests.
+.fixture <- function(name) {
+  system.file("extdata", name, package = "SpeedDada", mustWork = TRUE)
 }
 
 # ── 1. filterAndTrim ─────────────────────────────────────────────────────────
 
-#' Filter and trim FASTQ reads (drop-in for dada2::filterAndTrim)
+#' Filter and Trim FASTQ Reads
 #'
-#' @param fwd    character vector of forward-read input paths.
-#' @param filt   character vector of forward-read output paths.
-#' @param rev    character vector of reverse-read input paths, or NULL.
-#' @param filt.rev character vector of reverse-read output paths, or NULL.
-#' @param truncLen integer(1 or 2): truncation length per direction.
-#' @param trimLeft integer(1 or 2): bases to trim from the 5' end.
-#' @param maxEE  numeric(1 or 2): maximum expected errors.
-#' @param truncQ integer: truncate at first base below this Phred score.
-#' @param minLen integer: discard reads shorter than this after truncation.
-#' @param compress logical: accepted for compatibility, output is plain FASTQ.
-#' @param multithread accepted for compatibility, Rust uses Rayon automatically.
-#' @param ...    extra arguments ignored for compatibility.
-#' @return integer matrix [files × c("reads.in", "reads.out")].
+#' Drop-in replacement for \code{dada2::filterAndTrim}. Filters and trims
+#' single- or paired-end FASTQ files using the high-performance Rust core.
+#'
+#' @param fwd Character vector of forward-read input paths.
+#' @param filt Character vector of forward-read output paths.
+#' @param rev Character vector of reverse-read input paths, or \code{NULL}
+#'   for single-end.
+#' @param filt.rev Character vector of reverse-read output paths, or \code{NULL}.
+#' @param truncLen Integer of length 1 or 2: truncation length per direction.
+#' @param trimLeft Integer of length 1 or 2: bases to trim from the 5' end.
+#' @param maxEE Numeric of length 1 or 2: maximum expected errors.
+#' @param truncQ Integer: truncate at first base below this Phred score.
+#' @param minLen Integer: discard reads shorter than this after truncation.
+#' @param compress Accepted for compatibility; output is plain FASTQ.
+#' @param multithread Accepted for compatibility; Rust uses Rayon automatically.
+#' @param ... Extra arguments ignored for compatibility.
+#'
+#' @return Integer matrix of dimensions [files x 2] with column names
+#'   \code{c("reads.in", "reads.out")}.
+#'
+#' @examples
+#' fwd_in  <- system.file("extdata", "sample_R1.fastq", package = "SpeedDada")
+#' fwd_out <- tempfile(fileext = ".fastq")
+#' filterAndTrim(fwd_in, fwd_out, truncLen = 30, maxEE = 5, minLen = 10)
+#'
+#' @export
 filterAndTrim <- function(fwd, filt, rev = NULL, filt.rev = NULL,
                           truncLen = 0L, trimLeft = 0L, maxEE = Inf,
                           truncQ = 2L, minLen = 20L,
@@ -78,13 +96,26 @@ filterAndTrim <- function(fwd, filt, rev = NULL, filt.rev = NULL,
 
 # ── 2. learnErrors ───────────────────────────────────────────────────────────
 
-#' Learn error rates from FASTQ files (drop-in for dada2::learnErrors)
+#' Learn Error Rates from FASTQ Files
 #'
-#' @param fls character vector of FASTQ paths, or a directory containing them.
-#' @param nbases total bases to use for learning (converted to approx read count).
-#' @param multithread accepted for compatibility.
-#' @param ...   extra arguments ignored.
-#' @return opaque error model handle (R externalptr).
+#' Drop-in replacement for \code{dada2::learnErrors}. Estimates a substitution
+#' error model from FASTQ data using the Rust EM implementation.
+#'
+#' @param fls Character vector of FASTQ paths, or a directory containing them.
+#' @param nbases Total bases to use for learning (converted to approx. read
+#'   count internally).
+#' @param multithread Accepted for compatibility; Rust uses Rayon automatically.
+#' @param ... Extra arguments ignored for compatibility.
+#'
+#' @return Opaque error-model handle (an R \code{externalptr}) consumed by
+#'   \code{\link{dada}}.
+#'
+#' @examples
+#' fastq <- system.file("extdata", "sample_R1.fastq", package = "SpeedDada")
+#' err <- learnErrors(fastq, nbases = 1e4)
+#' err
+#'
+#' @export
 learnErrors <- function(fls, nbases = 1e8, multithread = FALSE, ...) {
   .ignore_multithread(multithread)
   if (length(fls) == 1L && dir.exists(fls)) {
@@ -95,13 +126,27 @@ learnErrors <- function(fls, nbases = 1e8, multithread = FALSE, ...) {
 
 # ── 3. derepFastq ────────────────────────────────────────────────────────────
 
-#' Dereplicate FASTQ file(s) (drop-in for dada2::derepFastq)
+#' Dereplicate FASTQ File(s)
 #'
-#' @param fls character vector of FASTQ paths.
-#' @param verbose logical: ignored.
-#' @param ...  extra arguments ignored.
-#' @return For one file: a "derep" list with \code{$uniques} (named integer vector).
-#'         For multiple files: a named list of such objects.
+#' Drop-in replacement for \code{dada2::derepFastq}. Streams the FASTQ file
+#' through the Rust dereplicator, returning a \code{"derep"} object.
+#'
+#' @param fls Character vector of FASTQ paths.
+#' @param verbose Logical: ignored (accepted for compatibility).
+#' @param ... Extra arguments ignored.
+#'
+#' @return For one file: a \code{"derep"} list with \code{$uniques} (named
+#'   integer vector of sequence → count). For multiple files: a named list
+#'   of such objects. The internal \code{.rust_ptr} field carries the full
+#'   per-position quality scores across the FFI boundary so that downstream
+#'   \code{\link{dada}} calls use real qualities, not a placeholder.
+#'
+#' @examples
+#' fastq <- system.file("extdata", "sample_R1.fastq", package = "SpeedDada")
+#' d <- derepFastq(fastq)
+#' head(d$uniques)
+#'
+#' @export
 derepFastq <- function(fls, verbose = FALSE, ...) {
   make_derep <- function(path) {
     raw <- .Call("wrap__derepFastq", as.character(path))
@@ -123,38 +168,49 @@ derepFastq <- function(fls, verbose = FALSE, ...) {
 
 # ── 4. dada ──────────────────────────────────────────────────────────────────
 
-#' Denoise amplicon reads (drop-in for dada2::dada)
+#' Denoise Amplicon Reads
 #'
-#' @param derep  a "derep" object from \code{derepFastq}, or a list of them.
-#' @param err    error model from \code{learnErrors}.
-#' @param selfConsist logical: not implemented; emits a warning if TRUE.
-#' @param pool   logical or "pseudo": TRUE enables cross-sample pooling.
-#' @param omega_a numeric: DADA significance threshold (default 1e-40).
-#' @param multithread accepted for compatibility.
-#' @param verbose logical: ignored.
-#' @param ...    extra arguments ignored.
-#' @return "dada" object with \code{$denoised} (named integer vector seq→count),
-#'         or a list of such objects if \code{derep} is a list.
+#' Drop-in replacement for \code{dada2::dada}. Runs the DADA partition + EM
+#' refinement algorithm on dereplicated samples.
+#'
+#' @param derep A \code{"derep"} object from \code{\link{derepFastq}}, or a
+#'   list of them for multi-sample denoising.
+#' @param err Error model from \code{\link{learnErrors}}.
+#' @param selfConsist Logical: not implemented; emits a warning if \code{TRUE}.
+#' @param pool Logical or \code{"pseudo"}: \code{TRUE} enables cross-sample
+#'   pooling; \code{"pseudo"} uses Callahan's two-pass pseudo-pooling.
+#' @param omega_a Numeric: DADA significance threshold (default \code{1e-40}).
+#' @param multithread Accepted for compatibility; Rust uses Rayon automatically.
+#' @param verbose Logical: ignored.
+#' @param ... Extra arguments ignored.
+#'
+#' @return A \code{"dada"} object with \code{$denoised} (named integer vector
+#'   of sequence → count), or a list of such objects if \code{derep} is a list.
+#'
+#' @examples
+#' fastq <- system.file("extdata", "sample_R1.fastq", package = "SpeedDada")
+#' d <- derepFastq(fastq)
+#' err <- learnErrors(fastq, nbases = 1e4)
+#' res <- dada(d, err, omega_a = 1e-5)
+#' head(res$denoised)
+#'
+#' @export
 dada <- function(derep, err, selfConsist = FALSE, pool = FALSE,
                  omega_a = 1e-40, multithread = FALSE, verbose = TRUE, ...) {
   .ignore_multithread(multithread)
   if (!isFALSE(selfConsist))
-    warning("dada2rs: selfConsist is not implemented and was ignored")
+    warning("SpeedDada: selfConsist is not implemented and was ignored")
 
   pool_flag   <- isTRUE(pool)
   pseudo_flag <- identical(pool, "pseudo")
 
   # ── Cross-sample multi-sample path ────────────────────────────────────────
-  # For >=2 derep inputs the binding now takes a LIST OF EXTERNAL POINTERS
-  # (one per sample), each carrying the full Vec<UniqueSeq> with per-position
-  # quality — fixing a bug where the previous (seq, count)-only flat-vector
-  # protocol dropped quality and forced the Rust core to fake Phred 30.
   if (is.list(derep) && !inherits(derep, "derep") && length(derep) >= 2) {
     ptrs <- vector("list", length(derep))
     for (i in seq_along(derep)) {
       d <- derep[[i]]
       if (!inherits(d, "derep") || is.null(d$.rust_ptr))
-        stop("dada2rs: each element of derep must be a 'derep' object with a .rust_ptr")
+        stop("SpeedDada: each element of derep must be a 'derep' object with a .rust_ptr")
       ptrs[[i]] <- d$.rust_ptr
     }
     entry <- if (pseudo_flag)    "wrap__dada_pseudo"
@@ -177,7 +233,7 @@ dada <- function(derep, err, selfConsist = FALSE, pool = FALSE,
   # ── Single-sample path ────────────────────────────────────────────────────
   run_one <- function(d) {
     if (!inherits(d, "derep") || is.null(d$.rust_ptr))
-      stop("dada2rs: derep must be a 'derep' object with a .rust_ptr")
+      stop("SpeedDada: derep must be a 'derep' object with a .rust_ptr")
     raw <- .Call("wrap__dada",
       d$.rust_ptr,
       err,
@@ -190,28 +246,42 @@ dada <- function(derep, err, selfConsist = FALSE, pool = FALSE,
 
   if (inherits(derep, "derep")) run_one(derep)
   else if (is.list(derep))      lapply(derep, run_one)
-  else stop("dada2rs: derep must be a 'derep' object or list thereof")
+  else stop("SpeedDada: derep must be a 'derep' object or list thereof")
 }
 
 # ── 5. mergePairs ────────────────────────────────────────────────────────────
 
-#' Merge paired-end reads (drop-in for dada2::mergePairs)
+#' Merge Paired-End Reads
 #'
-#' @param dadaF  "dada" object for forward reads.
-#' @param derepF "derep" object for forward reads (accepted for compatibility).
-#' @param dadaR  "dada" object for reverse reads.
-#' @param derepR "derep" object for reverse reads (accepted for compatibility).
-#' @param minOverlap integer: minimum overlap length (default 12).
-#' @param maxMismatch integer: maximum mismatches in overlap (default 0).
-#' @param justConcatenate logical: concatenate instead of merging.
-#' @param verbose logical: ignored.
-#' @param ...    extra arguments ignored.
-#' @return data.frame with columns sequence, abundance, accept, nmatch, nmismatch, nindel.
+#' Drop-in replacement for \code{dada2::mergePairs}.
+#'
+#' @param dadaF \code{"dada"} object for forward reads.
+#' @param derepF \code{"derep"} object for forward reads (accepted for compatibility).
+#' @param dadaR \code{"dada"} object for reverse reads.
+#' @param derepR \code{"derep"} object for reverse reads (accepted for compatibility).
+#' @param minOverlap Integer: minimum overlap length (default 12).
+#' @param maxMismatch Integer: maximum mismatches in overlap (default 0).
+#' @param justConcatenate Logical: concatenate instead of merging.
+#' @param verbose Logical: ignored.
+#' @param ... Extra arguments ignored.
+#'
+#' @return Data frame with columns \code{sequence}, \code{abundance},
+#'   \code{accept}, \code{nmatch}, \code{nmismatch}, \code{nindel}.
+#'
+#' @examples
+#' fwd <- system.file("extdata", "sample_R1.fastq", package = "SpeedDada")
+#' rev <- system.file("extdata", "sample_R2.fastq", package = "SpeedDada")
+#' dF <- derepFastq(fwd); dR <- derepFastq(rev)
+#' err <- learnErrors(c(fwd, rev), nbases = 1e4)
+#' aF <- dada(dF, err, omega_a = 1e-5); aR <- dada(dR, err, omega_a = 1e-5)
+#' mergePairs(aF, dF, aR, dR, minOverlap = 5)
+#'
+#' @export
 mergePairs <- function(dadaF, derepF, dadaR, derepR,
                        minOverlap = 12L, maxMismatch = 0L,
                        justConcatenate = FALSE, verbose = FALSE, ...) {
   if (!inherits(dadaF, "dada") || !inherits(dadaR, "dada"))
-    stop("dada2rs: dadaF and dadaR must be 'dada' objects from dada()")
+    stop("SpeedDada: dadaF and dadaR must be 'dada' objects from dada()")
 
   fwd <- dadaF$denoised
   rev <- dadaR$denoised
@@ -236,12 +306,25 @@ mergePairs <- function(dadaF, derepF, dadaR, derepR,
 
 # ── 6. makeSequenceTable ─────────────────────────────────────────────────────
 
-#' Build sample × ASV count matrix (drop-in for dada2::makeSequenceTable)
+#' Build Sample x ASV Count Matrix
 #'
-#' @param samples list of dada / derep / mergePairs data.frames, optionally named.
-#' @param orderBy "abundance" to sort columns by total count (default), or "" for
-#'        insertion order.
-#' @return integer matrix [samples × ASV sequences].
+#' Drop-in replacement for \code{dada2::makeSequenceTable}.
+#'
+#' @param samples List of \code{dada} / \code{derep} / \code{mergePairs}
+#'   data frames, optionally named.
+#' @param orderBy \code{"abundance"} (default) sorts columns by total count;
+#'   \code{""} keeps insertion order.
+#'
+#' @return Integer matrix [samples x ASV sequences].
+#'
+#' @examples
+#' fastq <- system.file("extdata", "sample_R1.fastq", package = "SpeedDada")
+#' d <- derepFastq(fastq)
+#' err <- learnErrors(fastq, nbases = 1e4)
+#' res <- dada(d, err, omega_a = 1e-5)
+#' makeSequenceTable(list(s1 = res))
+#'
+#' @export
 makeSequenceTable <- function(samples, orderBy = "abundance") {
   if (!is.list(samples) ||
         inherits(samples, "dada") ||
@@ -280,15 +363,29 @@ makeSequenceTable <- function(samples, orderBy = "abundance") {
 
 # ── 7. removeBimeraDenovo ────────────────────────────────────────────────────
 
-#' Remove chimeric sequences (drop-in for dada2::removeBimeraDenovo)
+#' Remove Chimeric Sequences (Bimera Detection)
 #'
-#' @param unqs    integer matrix (sequence table), named integer vector, dada,
-#'                derep, or mergePairs data.frame.
-#' @param method  accepted for compatibility (always uses "consensus").
-#' @param multithread accepted for compatibility.
-#' @param verbose logical: ignored.
-#' @param ...     extra arguments ignored.
+#' Drop-in replacement for \code{dada2::removeBimeraDenovo}.
+#'
+#' @param unqs Integer matrix (sequence table), named integer vector, dada
+#'   object, derep object, or mergePairs data frame.
+#' @param method Accepted for compatibility (the Rust core uses a single,
+#'   consensus-style scoring path).
+#' @param multithread Accepted for compatibility; Rust uses Rayon automatically.
+#' @param verbose Logical: ignored.
+#' @param ... Extra arguments ignored.
+#'
 #' @return Same type as input with chimeric sequences removed.
+#'
+#' @examples
+#' fastq <- system.file("extdata", "sample_R1.fastq", package = "SpeedDada")
+#' d <- derepFastq(fastq)
+#' err <- learnErrors(fastq, nbases = 1e4)
+#' res <- dada(d, err, omega_a = 1e-5)
+#' mat <- makeSequenceTable(list(s1 = res))
+#' removeBimeraDenovo(mat)
+#'
+#' @export
 removeBimeraDenovo <- function(unqs, method = "consensus",
                                multithread = FALSE, verbose = FALSE, ...) {
   .ignore_multithread(multithread)

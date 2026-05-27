@@ -1,4 +1,4 @@
-//! `extendr` bindings for dada2-core — exposes the DADA2 pipeline as an R package.
+//! `extendr` bindings for speeddada-core — exposes the DADA2 pipeline as an R package.
 #![allow(non_snake_case)]
 //!
 //! Each function mirrors a step in the R dada2 API so the R wrapper layer can
@@ -8,12 +8,11 @@
 
 use extendr_api::prelude::*;
 
-use dada2_core::{
+use speeddada_core::{
     chimera::remove_bimera_denovo,
     dada::{
-        dada as dada_core, dada_many as dada_many_core,
-        dada_pooled as dada_pooled_core, dada_pseudo as dada_pseudo_core,
-        Asv, DadaConfig,
+        dada as dada_core, dada_many as dada_many_core, dada_pooled as dada_pooled_core,
+        dada_pseudo as dada_pseudo_core, Asv, DadaConfig,
     },
     derep::{derep_fastq, UniqueSeq},
     error_model::{learn_errors, ErrorLearningConfig, ErrorModel},
@@ -57,7 +56,10 @@ impl RDereped {}
 fn asvs_from_r(seqs: &[String], counts: &[i32]) -> Vec<Asv> {
     seqs.iter()
         .zip(counts.iter())
-        .map(|(s, &c)| Asv { sequence: s.as_bytes().to_vec(), abundance: c as u32 })
+        .map(|(s, &c)| Asv {
+            sequence: s.as_bytes().to_vec(),
+            abundance: c as u32,
+        })
         .collect()
 }
 
@@ -123,12 +125,20 @@ fn filterAndTrim(
                 .zip(fwd_out.iter())
                 .zip(rev_out_paths.iter())
                 .map(|(((f, r), fo), ro)| {
-                    (PathBuf::from(f), PathBuf::from(r), PathBuf::from(fo), PathBuf::from(ro))
+                    (
+                        PathBuf::from(f),
+                        PathBuf::from(r),
+                        PathBuf::from(fo),
+                        PathBuf::from(ro),
+                    )
                 })
                 .collect();
             let stats = filter_and_trim_paired_many(&cfg_fwd, &cfg_rev, &pairs)
                 .unwrap_or_else(|e| panic!("filterAndTrim: {e}"));
-            stats.iter().map(|s| (s.reads_in as i32, s.pairs_out as i32)).unzip()
+            stats
+                .iter()
+                .map(|s| (s.reads_in as i32, s.pairs_out as i32))
+                .unzip()
         }
         Nullable::Null => {
             let pairs: Vec<(PathBuf, PathBuf)> = fwd
@@ -138,11 +148,18 @@ fn filterAndTrim(
                 .collect();
             let stats = filter_and_trim_many(&cfg_fwd, &pairs)
                 .unwrap_or_else(|e| panic!("filterAndTrim: {e}"));
-            stats.iter().map(|s| (s.reads_in as i32, s.reads_out as i32)).unzip()
+            stats
+                .iter()
+                .map(|s| (s.reads_in as i32, s.reads_out as i32))
+                .unzip()
         }
     };
 
-    list!(reads_in = reads_in, reads_out = reads_out, rownames = rownames)
+    list!(
+        reads_in = reads_in,
+        reads_out = reads_out,
+        rownames = rownames
+    )
 }
 
 // ── 2. learnErrors ───────────────────────────────────────────────────────────
@@ -156,16 +173,17 @@ fn learnErrors(fls: Vec<String>, nbases: f64) -> ExternalPtr<RErrorModel> {
     let n_reads = ((nbases / 150.0).round() as usize).clamp(10_000, 10_000_000);
     let mut all_records = Vec::new();
     for path in &fls {
-        let recs =
-            read_fastq(Path::new(path)).unwrap_or_else(|e| panic!("learnErrors: {e}"));
+        let recs = read_fastq(Path::new(path)).unwrap_or_else(|e| panic!("learnErrors: {e}"));
         all_records.extend(recs);
         if all_records.len() >= n_reads {
             break;
         }
     }
-    let cfg = ErrorLearningConfig { n_reads, ..Default::default() };
-    let model =
-        learn_errors(&all_records, &cfg).unwrap_or_else(|_| ErrorModel::illumina_default());
+    let cfg = ErrorLearningConfig {
+        n_reads,
+        ..Default::default()
+    };
+    let model = learn_errors(&all_records, &cfg).unwrap_or_else(|_| ErrorModel::illumina_default());
     ExternalPtr::new(RErrorModel(model))
 }
 
@@ -181,12 +199,12 @@ fn learnErrors(fls: Vec<String>, nbases: f64) -> ExternalPtr<RErrorModel> {
 /// dropped quality information.
 #[extendr]
 fn derepFastq(path: &str) -> List {
-    let records =
-        read_fastq(Path::new(path)).unwrap_or_else(|e| panic!("derepFastq: {e}"));
-    let uniques =
-        derep_fastq(&records).unwrap_or_else(|e| panic!("derepFastq: {e}"));
-    let seqs: Vec<String> =
-        uniques.iter().map(|u| String::from_utf8_lossy(&u.seq).into_owned()).collect();
+    let records = read_fastq(Path::new(path)).unwrap_or_else(|e| panic!("derepFastq: {e}"));
+    let uniques = derep_fastq(&records).unwrap_or_else(|e| panic!("derepFastq: {e}"));
+    let seqs: Vec<String> = uniques
+        .iter()
+        .map(|u| String::from_utf8_lossy(&u.seq).into_owned())
+        .collect();
     let counts: Vec<i32> = uniques.iter().map(|u| u.count as i32).collect();
     let ptr = ExternalPtr::new(RDereped(uniques));
     list!(seqs = seqs, counts = counts, ptr = ptr)
@@ -206,11 +224,16 @@ fn dada(
     omega_a: f64,
     pool: bool,
 ) -> List {
-    let cfg = DadaConfig { omega_a, pool, ..Default::default() };
-    let asvs =
-        dada_core(&derep.0, &err.0, &cfg).unwrap_or_else(|e| panic!("dada: {e}"));
-    let out_seqs: Vec<String> =
-        asvs.iter().map(|a| String::from_utf8_lossy(&a.sequence).into_owned()).collect();
+    let cfg = DadaConfig {
+        omega_a,
+        pool,
+        ..Default::default()
+    };
+    let asvs = dada_core(&derep.0, &err.0, &cfg).unwrap_or_else(|e| panic!("dada: {e}"));
+    let out_seqs: Vec<String> = asvs
+        .iter()
+        .map(|a| String::from_utf8_lossy(&a.sequence).into_owned())
+        .collect();
     let out_counts: Vec<i32> = asvs.iter().map(|a| a.abundance as i32).collect();
     list!(seqs = out_seqs, counts = out_counts)
 }
@@ -222,24 +245,31 @@ fn dada(
 /// flattens the result back to parallel sample_idx / seqs / counts vectors.
 fn dispatch_multi_sample<F>(
     dereps: List,
-    err: &dada2_core::error_model::ErrorModel,
+    err: &speeddada_core::error_model::ErrorModel,
     omega_a: f64,
     kernel: F,
 ) -> List
 where
-    F: FnOnce(&[&[UniqueSeq]], &dada2_core::error_model::ErrorModel, &DadaConfig)
-        -> Result<Vec<Vec<Asv>>, dada2_core::Dada2Error>,
+    F: FnOnce(
+        &[&[UniqueSeq]],
+        &speeddada_core::error_model::ErrorModel,
+        &DadaConfig,
+    ) -> Result<Vec<Vec<Asv>>, speeddada_core::Dada2Error>,
 {
     // Robj for each list element; downcast each to ExternalPtr<RDereped>.
     let owned: Vec<ExternalPtr<RDereped>> = dereps
         .iter()
-        .map(|(_, r)| ExternalPtr::<RDereped>::try_from(r)
-            .unwrap_or_else(|e| panic!("expected list of derep externalptrs: {e:?}")))
+        .map(|(_, r)| {
+            ExternalPtr::<RDereped>::try_from(r)
+                .unwrap_or_else(|e| panic!("expected list of derep externalptrs: {e:?}"))
+        })
         .collect();
     let refs: Vec<&[UniqueSeq]> = owned.iter().map(|p| p.0.as_slice()).collect();
-    let cfg = DadaConfig { omega_a, ..Default::default() };
-    let result = kernel(&refs, err, &cfg)
-        .unwrap_or_else(|e| panic!("dada multi-sample: {e}"));
+    let cfg = DadaConfig {
+        omega_a,
+        ..Default::default()
+    };
+    let result = kernel(&refs, err, &cfg).unwrap_or_else(|e| panic!("dada multi-sample: {e}"));
 
     let mut out_sample_idx: Vec<i32> = Vec::new();
     let mut out_seqs: Vec<String> = Vec::new();
@@ -251,7 +281,11 @@ where
             out_counts.push(a.abundance as i32);
         }
     }
-    list!(sample_idx = out_sample_idx, seqs = out_seqs, counts = out_counts)
+    list!(
+        sample_idx = out_sample_idx,
+        seqs = out_seqs,
+        counts = out_counts
+    )
 }
 
 /// Run DADA per-sample across multiple samples, parallelised via Rayon.
@@ -259,11 +293,7 @@ where
 /// Takes a list of derep externalptrs (one per sample) carrying per-position
 /// quality. Each sample is denoised independently; no cross-sample priors.
 #[extendr]
-fn dada_many(
-    dereps: List,
-    err: ExternalPtr<RErrorModel>,
-    omega_a: f64,
-) -> List {
+fn dada_many(dereps: List, err: ExternalPtr<RErrorModel>, omega_a: f64) -> List {
     dispatch_multi_sample(dereps, &err.0, omega_a, dada_many_core)
 }
 
@@ -275,11 +305,7 @@ fn dada_many(
 /// quality. Returns parallel vectors `(sample_idx, seqs, counts)` of
 /// per-sample ASVs after pooled denoising.
 #[extendr]
-fn dada_pooled(
-    dereps: List,
-    err: ExternalPtr<RErrorModel>,
-    omega_a: f64,
-) -> List {
+fn dada_pooled(dereps: List, err: ExternalPtr<RErrorModel>, omega_a: f64) -> List {
     dispatch_multi_sample(dereps, &err.0, omega_a, |refs, err, cfg| {
         let mut cfg = cfg.clone();
         cfg.pool = true;
@@ -295,11 +321,7 @@ fn dada_pooled(
 /// quality. Returns parallel vectors `(sample_idx, seqs, counts)` of
 /// per-sample ASVs after pseudo-pool denoising.
 #[extendr]
-fn dada_pseudo(
-    dereps: List,
-    err: ExternalPtr<RErrorModel>,
-    omega_a: f64,
-) -> List {
+fn dada_pseudo(dereps: List, err: ExternalPtr<RErrorModel>, omega_a: f64) -> List {
     dispatch_multi_sample(dereps, &err.0, omega_a, dada_pseudo_core)
 }
 
@@ -326,8 +348,8 @@ fn mergePairs(
         max_mismatches: max_mismatch as u32,
         just_concatenate,
     };
-    let merged = merge_pairs(&fwd_asvs, &rev_asvs, &cfg)
-        .unwrap_or_else(|e| panic!("mergePairs: {e}"));
+    let merged =
+        merge_pairs(&fwd_asvs, &rev_asvs, &cfg).unwrap_or_else(|e| panic!("mergePairs: {e}"));
 
     let mut sequences = Vec::with_capacity(merged.len());
     let mut abundances = Vec::with_capacity(merged.len());
@@ -341,12 +363,12 @@ fn mergePairs(
     }
     let n = merged.len();
     list!(
-        sequence  = sequences,
+        sequence = sequences,
         abundance = abundances,
-        accept    = vec![true; n],
-        nmatch    = nmatch,
+        accept = vec![true; n],
+        nmatch = nmatch,
         nmismatch = nmismatch,
-        nindel    = vec![0i32; n]
+        nindel = vec![0i32; n]
     )
 }
 
@@ -418,18 +440,24 @@ fn removeBimeraDenovo(seqs: Vec<String>, counts: Vec<i32>) -> Vec<i32> {
         .map(|(s, &c)| (s.as_bytes().to_vec(), c as u32))
         .collect();
 
-    let clean = remove_bimera_denovo(&pairs)
-        .unwrap_or_else(|e| panic!("removeBimeraDenovo: {e}"));
-    let kept: std::collections::HashSet<&[u8]> =
-        clean.iter().map(|(s, _)| s.as_slice()).collect();
+    let clean = remove_bimera_denovo(&pairs).unwrap_or_else(|e| panic!("removeBimeraDenovo: {e}"));
+    let kept: std::collections::HashSet<&[u8]> = clean.iter().map(|(s, _)| s.as_slice()).collect();
 
-    seqs.iter().map(|s| if kept.contains(s.as_bytes()) { 1i32 } else { 0i32 }).collect()
+    seqs.iter()
+        .map(|s| {
+            if kept.contains(s.as_bytes()) {
+                1i32
+            } else {
+                0i32
+            }
+        })
+        .collect()
 }
 
 // ── Module registration ───────────────────────────────────────────────────────
 
 extendr_module! {
-    mod dada2rs;
+    mod SpeedDada;
     impl RErrorModel;
     impl RDereped;
     fn filterAndTrim;

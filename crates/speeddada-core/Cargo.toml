@@ -1,8 +1,20 @@
 [package]
-name = "dada2-core"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
+name                    = "speeddada-core"
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+authors.workspace       = true
+license.workspace       = true
+description.workspace   = true
+homepage.workspace      = true
+repository.workspace    = true
+documentation.workspace = true
+keywords.workspace      = true
+categories.workspace    = true
+readme.workspace        = true
+
+[lib]
+name = "speeddada_core"
 
 [dependencies]
 rayon.workspace         = true
@@ -22,12 +34,12 @@ tempfile.workspace  = true
 criterion.workspace = true
 
 [[bench]]
-name = "pipeline"
+name    = "pipeline"
 harness = false
 
 [[bin]]
-name = "dada2-bench"
-path = "src/bin/dada2_bench.rs"
+name = "speeddada-bench"
+path = "src/bin/speeddada_bench.rs"
 
 [[test]]
 name = "pipeline_test"

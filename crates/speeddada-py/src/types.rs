@@ -1,14 +1,10 @@
-//! PyO3 class wrappers for dada2-core types.
+//! PyO3 class wrappers for speeddada-core types.
 
-use dada2_core::{
-    dada::Asv,
-    derep::UniqueSeq,
-    error_model::ErrorModel,
-    filter::FilterConfig,
-    merge::MergedRead,
+use pyo3::prelude::*;
+use speeddada_core::{
+    dada::Asv, derep::UniqueSeq, error_model::ErrorModel, filter::FilterConfig, merge::MergedRead,
     sequence_table::SequenceTable,
 };
-use pyo3::prelude::*;
 use std::collections::HashMap;
 
 // ── FilterConfig ─────────────────────────────────────────────────────────────
@@ -45,7 +41,14 @@ impl PyFilterConfig {
         trim_left: usize,
         trim_right: usize,
     ) -> Self {
-        Self(FilterConfig { trunc_len, min_len, max_ee, trunc_q, trim_left, trim_right })
+        Self(FilterConfig {
+            trunc_len,
+            min_len,
+            max_ee,
+            trunc_q,
+            trim_left,
+            trim_right,
+        })
     }
 
     fn __repr__(&self) -> String {
@@ -115,7 +118,7 @@ impl PyErrorModel {
     fn plot_errors(&self) -> HashMap<String, Vec<f64>> {
         let mut quality = Vec::new();
         let mut error_rates = Vec::new();
-        for q in 0..dada2_core::error_model::MAX_QUAL {
+        for q in 0..speeddada_core::error_model::MAX_QUAL {
             #[allow(clippy::cast_precision_loss)]
             quality.push(q as f64);
             let rate: f64 = (0..16)
@@ -180,12 +183,18 @@ impl PyDadaResult {
 ///     Number of indels in the overlap (always 0 for this aligner).
 #[pyclass(name = "MergedRead")]
 pub struct PyMergedRead {
-    #[pyo3(get)] pub sequence: Vec<u8>,
-    #[pyo3(get)] pub abundance: u32,
-    #[pyo3(get)] pub accept: bool,
-    #[pyo3(get)] pub nmatch: usize,
-    #[pyo3(get)] pub nmismatch: u32,
-    #[pyo3(get)] pub nindel: u32,
+    #[pyo3(get)]
+    pub sequence: Vec<u8>,
+    #[pyo3(get)]
+    pub abundance: u32,
+    #[pyo3(get)]
+    pub accept: bool,
+    #[pyo3(get)]
+    pub nmatch: usize,
+    #[pyo3(get)]
+    pub nmismatch: u32,
+    #[pyo3(get)]
+    pub nindel: u32,
 }
 
 impl From<MergedRead> for PyMergedRead {
@@ -204,7 +213,10 @@ impl From<MergedRead> for PyMergedRead {
 #[pymethods]
 impl PyMergedRead {
     fn __repr__(&self) -> String {
-        format!("MergedRead(abundance={}, nmatch={}, nmismatch={})", self.abundance, self.nmatch, self.nmismatch)
+        format!(
+            "MergedRead(abundance={}, nmatch={}, nmismatch={})",
+            self.abundance, self.nmatch, self.nmismatch
+        )
     }
 }
 
@@ -217,15 +229,24 @@ impl PyMergedRead {
 /// asv : str, kingdom : str | None, phylum : str | None, ..., confidence : float
 #[pyclass(name = "TaxonAssignment")]
 pub struct PyTaxonAssignment {
-    #[pyo3(get)] pub asv: String,
-    #[pyo3(get)] pub kingdom: Option<String>,
-    #[pyo3(get)] pub phylum: Option<String>,
-    #[pyo3(get)] pub class: Option<String>,
-    #[pyo3(get)] pub order: Option<String>,
-    #[pyo3(get)] pub family: Option<String>,
-    #[pyo3(get)] pub genus: Option<String>,
-    #[pyo3(get)] pub species: Option<String>,
-    #[pyo3(get)] pub confidence: f64,
+    #[pyo3(get)]
+    pub asv: String,
+    #[pyo3(get)]
+    pub kingdom: Option<String>,
+    #[pyo3(get)]
+    pub phylum: Option<String>,
+    #[pyo3(get)]
+    pub class: Option<String>,
+    #[pyo3(get)]
+    pub order: Option<String>,
+    #[pyo3(get)]
+    pub family: Option<String>,
+    #[pyo3(get)]
+    pub genus: Option<String>,
+    #[pyo3(get)]
+    pub species: Option<String>,
+    #[pyo3(get)]
+    pub confidence: f64,
 }
 
 #[pymethods]

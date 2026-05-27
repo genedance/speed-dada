@@ -22,7 +22,11 @@ pub struct PrimerConfig {
 ///
 /// # Errors
 /// Returns [`Dada2Error`] on I/O or parse failure.
-pub fn trim_primers(cfg: &PrimerConfig, input: &Path, output: &Path) -> Result<FilterStats, Dada2Error> {
+pub fn trim_primers(
+    cfg: &PrimerConfig,
+    input: &Path,
+    output: &Path,
+) -> Result<FilterStats, Dada2Error> {
     use needletail::parse_fastx_file;
     use std::io::Write;
 
@@ -55,18 +59,17 @@ pub fn trim_primers(cfg: &PrimerConfig, input: &Path, output: &Path) -> Result<F
         }
     }
 
-    Ok(FilterStats { reads_in, reads_out })
+    Ok(FilterStats {
+        reads_in,
+        reads_out,
+    })
 }
 
 /// Locate and trim primers from a single read.
 ///
 /// Returns `Some((trimmed_seq, trimmed_qual))` if both primers are found
 /// within tolerance, `None` if the read should be discarded.
-fn apply_primer_trim(
-    seq: &[u8],
-    qual: &[u8],
-    cfg: &PrimerConfig,
-) -> Option<(Vec<u8>, Vec<u8>)> {
+fn apply_primer_trim(seq: &[u8], qual: &[u8], cfg: &PrimerConfig) -> Option<(Vec<u8>, Vec<u8>)> {
     let fwd_len = cfg.fwd_primer.len();
     let rev_len = cfg.rev_primer.len();
 
@@ -75,7 +78,14 @@ fn apply_primer_trim(
     let fwd_trim_start = if fwd_len == 0 {
         0
     } else {
-        find_primer_position(seq, &cfg.fwd_primer, 0, fwd_search_end, cfg.max_mismatches, cfg.min_overlap)?
+        find_primer_position(
+            seq,
+            &cfg.fwd_primer,
+            0,
+            fwd_search_end,
+            cfg.max_mismatches,
+            cfg.min_overlap,
+        )?
     };
 
     // --- Reverse primer search at the 3' end ---
@@ -85,7 +95,13 @@ fn apply_primer_trim(
         // The reverse primer appears near the 3' end of the read.
         // Search window: last (rev_len + 5) bases.
         let rev_search_start = seq.len().saturating_sub(rev_len + 5);
-        find_primer_end(seq, &cfg.rev_primer, rev_search_start, cfg.max_mismatches, cfg.min_overlap)?
+        find_primer_end(
+            seq,
+            &cfg.rev_primer,
+            rev_search_start,
+            cfg.max_mismatches,
+            cfg.min_overlap,
+        )?
     };
 
     if fwd_trim_start >= rev_trim_end {
@@ -170,16 +186,8 @@ fn find_primer_end(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use crate::test_util::write_test_fastq as write_fastq;
     use tempfile::NamedTempFile;
-
-    fn write_fastq(records: &[(&str, &str, &str)]) -> NamedTempFile {
-        let mut f = NamedTempFile::new().unwrap();
-        for (id, seq, qual) in records {
-            writeln!(f, "@{id}\n{seq}\n+\n{qual}").unwrap();
-        }
-        f
-    }
 
     #[test]
     fn primers_trimmed_correctly() {

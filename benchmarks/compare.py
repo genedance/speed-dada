@@ -1,4 +1,4 @@
-"""Compare ASV output and timing across R dada2, dada2rs, and Python dada2."""
+"""Compare ASV output and timing across R dada2, SpeedDada, and Python dada2."""
 import json, math
 from pathlib import Path
 
@@ -6,7 +6,7 @@ OUT = Path("/tmp/bench_out")
 
 TOOLS = [
     ("R dada2",     OUT / "r_output.json"),
-    ("dada2rs",     OUT / "dada2rs_output.json"),
+    ("SpeedDada",     OUT / "speeddada_output.json"),
     ("Python dada2", OUT / "rust_output.json"),
 ]
 

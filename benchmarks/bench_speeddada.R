@@ -1,9 +1,9 @@
 #!/usr/bin/env Rscript
-# Benchmark: dada2rs (Rust R-binding) on simulated 16S V3-V4 paired FASTQs.
-# Mirrors bench_r.R but loads dada2rs instead of dada2.
+# Benchmark: SpeedDada (Rust R-binding) on simulated 16S V3-V4 paired FASTQs.
+# Mirrors bench_r.R but loads SpeedDada instead of dada2.
 
 .libPaths(c(path.expand("~/R/library"), .libPaths()))
-suppressPackageStartupMessages(library(dada2rs))
+suppressPackageStartupMessages(library(SpeedDada))
 suppressPackageStartupMessages(library(jsonlite))
 
 R1  <- "/tmp/bench_fastq/R1.fastq"
@@ -72,10 +72,10 @@ abunds <- as.integer(seqtab_clean[1, ])
 cat(sprintf("  asvs_out=%d  (%.1f ms)\n", length(asvs), t_chimera))
 
 t_total_ms <- (proc.time() - t_total)[3] * 1000
-cat(sprintf("\nTotal dada2rs time: %.1f ms\n", t_total_ms))
+cat(sprintf("\nTotal SpeedDada time: %.1f ms\n", t_total_ms))
 
 result <- list(
-  tool       = "dada2rs",
+  tool       = "SpeedDada",
   total_ms   = round(t_total_ms, 1),
   stages     = list(
     filter_ms       = round(t_filter,  1),
@@ -89,9 +89,9 @@ result <- list(
     list(sequence = asvs[i], abundance = abunds[i]))
 )
 writeLines(toJSON(result, auto_unbox = TRUE, pretty = TRUE),
-           file.path(out, "dada2rs_output.json"))
+           file.path(out, "speeddada_output.json"))
 
-cat("\nTop ASVs (dada2rs):\n")
+cat("\nTop ASVs (SpeedDada):\n")
 ord <- order(-abunds)
 for (i in head(ord, 5))
   cat(sprintf("  %s...  abundance=%d\n", substr(asvs[i], 1, 40), abunds[i]))

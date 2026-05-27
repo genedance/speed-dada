@@ -91,7 +91,10 @@ pub fn filter_and_trim(
         }
     }
     log::info!("filter_and_trim: {reads_in} reads in, {reads_out} passed");
-    Ok(FilterStats { reads_in, reads_out })
+    Ok(FilterStats {
+        reads_in,
+        reads_out,
+    })
 }
 
 /// Filter and trim multiple FASTQ files in parallel.
@@ -184,10 +187,16 @@ pub fn filter_and_trim_paired(
                     .unwrap_or("")
                     .to_owned();
 
-                let fwd_pass =
-                    apply_filters_owned(r1.seq().to_vec(), r1.qual().map(<[u8]>::to_vec).unwrap_or_default(), cfg_fwd);
-                let rev_pass =
-                    apply_filters_owned(r2.seq().to_vec(), r2.qual().map(<[u8]>::to_vec).unwrap_or_default(), cfg_rev);
+                let fwd_pass = apply_filters_owned(
+                    r1.seq().to_vec(),
+                    r1.qual().map(<[u8]>::to_vec).unwrap_or_default(),
+                    cfg_fwd,
+                );
+                let rev_pass = apply_filters_owned(
+                    r2.seq().to_vec(),
+                    r2.qual().map(<[u8]>::to_vec).unwrap_or_default(),
+                    cfg_rev,
+                );
 
                 match (fwd_pass, rev_pass) {
                     (Some((seq1, qual1)), Some((seq2, qual2))) => {
@@ -223,7 +232,13 @@ pub fn filter_and_trim_paired(
          fwd_failed={fwd_failed} rev_failed={rev_failed} both_failed={both_failed}"
     );
 
-    Ok(FilterStatsPaired { reads_in, pairs_out, fwd_failed, rev_failed, both_failed })
+    Ok(FilterStatsPaired {
+        reads_in,
+        pairs_out,
+        fwd_failed,
+        rev_failed,
+        both_failed,
+    })
 }
 
 /// Filter and trim multiple paired-end FASTQ file pairs in parallel.
@@ -308,16 +323,8 @@ pub(crate) fn apply_filters_owned(
 mod tests {
     use super::*;
     use crate::io::fastq::read_fastq;
-    use std::io::Write;
+    use crate::test_util::write_test_fastq as write_temp_fastq;
     use tempfile::NamedTempFile;
-
-    fn write_temp_fastq(records: &[(&str, &str, &str)]) -> NamedTempFile {
-        let mut f = NamedTempFile::new().unwrap();
-        for (id, seq, qual) in records {
-            writeln!(f, "@{id}\n{seq}\n+\n{qual}").unwrap();
-        }
-        f
-    }
 
     #[test]
     fn test_trunc_len_exact() {
@@ -344,7 +351,11 @@ mod tests {
         // Low-quality read: '!' = Phred 0 → error_prob = 1.0 per base
         let inp = write_temp_fastq(&[("r1", "ACGT", "!!!!")]);
         let out = NamedTempFile::new().unwrap();
-        let cfg = FilterConfig { max_ee: 0.1, min_len: 1, ..Default::default() };
+        let cfg = FilterConfig {
+            max_ee: 0.1,
+            min_len: 1,
+            ..Default::default()
+        };
         let stats = filter_and_trim(&cfg, inp.path(), out.path()).unwrap();
         assert_eq!(stats.reads_out, 0);
     }
@@ -388,8 +399,16 @@ mod tests {
         let r1_out = NamedTempFile::new().unwrap();
         let r2_out = NamedTempFile::new().unwrap();
 
-        let cfg_fwd = FilterConfig { max_ee: 0.5, min_len: 1, ..Default::default() };
-        let cfg_rev = FilterConfig { max_ee: 100.0, min_len: 1, ..Default::default() };
+        let cfg_fwd = FilterConfig {
+            max_ee: 0.5,
+            min_len: 1,
+            ..Default::default()
+        };
+        let cfg_rev = FilterConfig {
+            max_ee: 100.0,
+            min_len: 1,
+            ..Default::default()
+        };
 
         let stats = filter_and_trim_paired(
             &cfg_fwd,
@@ -412,7 +431,10 @@ mod tests {
         let inp2 = write_temp_fastq(&[("r2", "TTTTTTTT", "IIIIIIII")]);
         let out1 = NamedTempFile::new().unwrap();
         let out2 = NamedTempFile::new().unwrap();
-        let cfg = FilterConfig { min_len: 4, ..Default::default() };
+        let cfg = FilterConfig {
+            min_len: 4,
+            ..Default::default()
+        };
         let pairs = vec![
             (inp1.path().to_path_buf(), out1.path().to_path_buf()),
             (inp2.path().to_path_buf(), out2.path().to_path_buf()),

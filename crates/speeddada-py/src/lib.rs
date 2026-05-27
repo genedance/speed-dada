@@ -1,6 +1,8 @@
-//! `PyO3` bindings for dada2-core.
+//! `PyO3` bindings for speeddada-core.
 //!
-//! Exposes the full pipeline as a Python module `dada2`.
+//! Compiled as the native sub-module `speeddada._native`; the pure-Python
+//! wrapper in `python/speeddada/__init__.py` re-exports its symbols so
+//! end users write `import speeddada`.
 
 // Python docstrings use snake_case parameter names that trigger doc_markdown.
 #![allow(clippy::doc_markdown)]
@@ -9,22 +11,20 @@ pub mod functions;
 pub mod types;
 
 use functions::{
-    assign_taxonomy_py, configure_runtime_py, dada_many_py, dada_pooled_py,
-    dada_pseudo_py, dada_py, derep_fastq_py, filter_and_trim_paired_py,
-    filter_and_trim_py, init_logging_py, learn_errors_py, make_sequence_table_py,
-    merge_pairs_py, quality_profile_py, remove_bimera_denovo_py, run_pipeline_py,
-    run_pipeline_samples_py, trim_primers_py, version,
-};
-use types::{
-    PyDadaResult, PyDerepResult, PyErrorModel, PyFilterConfig, PyFilterStats,
-    PyFilterStatsPaired, PyMergedRead, PyQualityProfile, PySequenceTable,
-    PyTaxonAssignment,
+    assign_taxonomy_py, configure_runtime_py, dada_many_py, dada_pooled_py, dada_pseudo_py,
+    dada_py, derep_fastq_py, filter_and_trim_paired_py, filter_and_trim_py, init_logging_py,
+    learn_errors_py, make_sequence_table_py, merge_pairs_py, quality_profile_py,
+    remove_bimera_denovo_py, run_pipeline_py, run_pipeline_samples_py, trim_primers_py, version,
 };
 use pyo3::prelude::*;
+use types::{
+    PyDadaResult, PyDerepResult, PyErrorModel, PyFilterConfig, PyFilterStats, PyFilterStatsPaired,
+    PyMergedRead, PyQualityProfile, PySequenceTable, PyTaxonAssignment,
+};
 
-/// dada2 — high-performance ASV pipeline (Rust core).
+/// speeddada native module — high-performance DADA2 ASV pipeline (Rust core).
 #[pymodule]
-fn dada2(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(configure_runtime_py, m)?)?;
     m.add_function(wrap_pyfunction!(init_logging_py, m)?)?;

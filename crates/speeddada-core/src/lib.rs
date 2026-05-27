@@ -1,4 +1,4 @@
-//! dada2-core — pure-Rust implementation of the DADA2 ASV pipeline.
+//! speeddada-core — pure-Rust implementation of the DADA2 ASV pipeline.
 //!
 //! Pipeline stages:
 //! 1. [`filter`] — quality filtering and adapter trimming
@@ -16,6 +16,8 @@
 pub mod align;
 pub mod chimera;
 pub mod dada;
+pub mod dada_pool;
+pub(crate) mod dada_scoring;
 pub mod derep;
 pub mod error_model;
 pub mod filter;
@@ -28,9 +30,12 @@ pub mod runtime;
 pub mod sequence_table;
 pub mod taxonomy;
 
+#[cfg(test)]
+pub(crate) mod test_util;
+
 use thiserror::Error;
 
-/// Unified error type for all dada2-core operations.
+/// Unified error type for all speeddada-core operations.
 #[derive(Debug, Error)]
 pub enum Dada2Error {
     /// I/O error reading or writing a file.
@@ -51,7 +56,9 @@ pub enum Dada2Error {
 }
 
 /// Phred quality score newtype — prevents confusion with raw u8 bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct Phred(pub u8);
 
 impl Phred {
@@ -69,16 +76,19 @@ impl Phred {
 }
 
 /// k-mer hash newtype — prevents k-mer integers being mixed with counts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash,
-         serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct Kmer(pub u64);
 
 /// Encode a byte slice as a lowercase hexadecimal string.
 #[must_use]
 pub fn bytes_to_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }

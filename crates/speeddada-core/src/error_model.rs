@@ -37,9 +37,16 @@ impl<'de> Deserialize<'de> for ErrorModel {
             matrix: Array2<f64>,
             n_reads_used: u64,
         }
-        let Wire { matrix, n_reads_used } = Wire::deserialize(d)?;
+        let Wire {
+            matrix,
+            n_reads_used,
+        } = Wire::deserialize(d)?;
         let log_matrix = build_log_matrix(&matrix);
-        Ok(Self { matrix, n_reads_used, log_matrix })
+        Ok(Self {
+            matrix,
+            n_reads_used,
+            log_matrix,
+        })
     }
 }
 
@@ -102,7 +109,11 @@ impl ErrorModel {
             }
         }
         let log_matrix = build_log_matrix(&matrix);
-        Self { matrix, n_reads_used: 0, log_matrix }
+        Self {
+            matrix,
+            n_reads_used: 0,
+            log_matrix,
+        }
     }
 }
 
@@ -144,7 +155,9 @@ pub fn learn_errors(
     cfg: &ErrorLearningConfig,
 ) -> Result<ErrorModel, Dada2Error> {
     if records.is_empty() {
-        return Err(Dada2Error::InvalidInput("no reads supplied to learn_errors".into()));
+        return Err(Dada2Error::InvalidInput(
+            "no reads supplied to learn_errors".into(),
+        ));
     }
 
     // Accumulate transition counts in parallel: each thread gets its own
@@ -199,7 +212,11 @@ pub fn learn_errors(
     }
 
     let log_matrix = build_log_matrix(&matrix);
-    Ok(ErrorModel { matrix, n_reads_used: n as u64, log_matrix })
+    Ok(ErrorModel {
+        matrix,
+        n_reads_used: n as u64,
+        log_matrix,
+    })
 }
 
 /// Fit a 2-parameter logistic model σ(a + b·q) to a count vector by gradient descent.
@@ -215,7 +232,10 @@ fn fit_logistic_row(
     let lr = 1e-3;
     let total: f64 = counts.sum();
     if total == 0.0 {
-        return Ok([if is_match { 5.0 } else { -5.0 }, if is_match { -0.3 } else { 0.1 }]);
+        return Ok([
+            if is_match { 5.0 } else { -5.0 },
+            if is_match { -0.3 } else { 0.1 },
+        ]);
     }
 
     let mut prev_ll = f64::NEG_INFINITY;
@@ -301,8 +321,14 @@ mod tests {
         let m = ErrorModel::illumina_default();
         let p_match = m.p_error(0, 0, Phred(30));
         let p_mismatch = m.p_error(0, 1, Phred(30));
-        assert!(p_match > 0.9, "match prob at Q30 should be > 0.9, got {p_match}");
-        assert!(p_mismatch < 0.01, "mismatch prob at Q30 should be < 0.01, got {p_mismatch}");
+        assert!(
+            p_match > 0.9,
+            "match prob at Q30 should be > 0.9, got {p_match}"
+        );
+        assert!(
+            p_mismatch < 0.01,
+            "mismatch prob at Q30 should be < 0.01, got {p_mismatch}"
+        );
     }
 
     #[test]
@@ -328,6 +354,12 @@ mod tests {
         let records: Vec<FastqRecord> = (0..50)
             .map(|_i| make_record("ACGTACGT", &"I".repeat(8)))
             .collect();
-        let _ = learn_errors(&records, &ErrorLearningConfig { max_iter: 100, ..Default::default() });
+        let _ = learn_errors(
+            &records,
+            &ErrorLearningConfig {
+                max_iter: 100,
+                ..Default::default()
+            },
+        );
     }
 }

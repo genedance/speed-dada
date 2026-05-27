@@ -1,32 +1,94 @@
 #!/bin/sh
-# configure — find workspace root and cargo, then stamp Makevars.in → Makevars.
-# R CMD INSTALL runs this from the package root directory.
+# configure — find the Rust workspace + cargo + libbz2 and stamp
+# src/Makevars.in → src/Makevars. Run by R CMD INSTALL on Linux & macOS.
+#
+# Two modes:
+#   * Development: the package sits inside the speed-dada git workspace.
+#     The workspace root is two directories up (../../).
+#   * Distribution: the package has been vendored — Rust source lives
+#     under src/rust/ and is built as a standalone workspace.
 
 set -e
 
 PKG_DIR="$(cd "$(dirname "$0")" && pwd)"
-# Package lives at <workspace>/r-package/dada2rs/; workspace is two levels up.
-WORKSPACE_ROOT="$(cd "${PKG_DIR}/../.." && pwd)"
 
-# Locate cargo: prefer $HOME/.cargo/bin, then PATH.
+# ── 1. Find the workspace ────────────────────────────────────────────────────
+# Prefer the parent workspace (development) so edits in crates/ are picked up
+# immediately. Fall back to vendored src/rust/ for distributed source tarballs.
+if [ -f "${PKG_DIR}/../../Cargo.toml" ] && \
+   grep -q '\[workspace\]' "${PKG_DIR}/../../Cargo.toml" 2>/dev/null; then
+    WORKSPACE_ROOT="$(cd "${PKG_DIR}/../.." && pwd)"
+    echo "SpeedDada: building from parent workspace at ${WORKSPACE_ROOT}"
+elif [ -f "${PKG_DIR}/src/rust/Cargo.toml" ]; then
+    WORKSPACE_ROOT="${PKG_DIR}/src/rust"
+    echo "SpeedDada: building from vendored src/rust workspace"
+else
+    cat >&2 <<EOF
+ERROR: Could not find Rust source. Looked for:
+  * ${PKG_DIR}/src/rust/Cargo.toml   (vendored layout)
+  * ${PKG_DIR}/../../Cargo.toml      (development layout)
+
+If you are installing from a tarball, run \`tools/vendor-r-rust.sh\` from
+the repository first to populate src/rust.
+EOF
+    exit 1
+fi
+
+# ── 2. Locate cargo: prefer \$HOME/.cargo/bin, then PATH. ─────────────────────
 if [ -x "${HOME}/.cargo/bin/cargo" ]; then
     CARGO="${HOME}/.cargo/bin/cargo"
 elif command -v cargo >/dev/null 2>&1; then
     CARGO="$(command -v cargo)"
 else
-    echo "ERROR: cargo not found. Install Rust from https://rustup.rs" >&2
+    cat >&2 <<'EOF'
+ERROR: cargo not found.
+
+SpeedDada requires the Rust toolchain. Install it with:
+
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+Then restart your shell so that ~/.cargo/bin is on PATH, and re-run
+install.packages("SpeedDada"). See https://rustup.rs for full details.
+EOF
     exit 1
 fi
 
-echo "dada2rs: workspace=${WORKSPACE_ROOT}  cargo=${CARGO}"
+# ── 3. Locate libbz2 (used by needletail for .fq.bz2 inputs). ────────────────
+BZ_LIB="-lbz2"
+if command -v pkg-config >/dev/null 2>&1 && \
+   pkg-config --exists bzip2 2>/dev/null; then
+    BZ_LIB="$(pkg-config --libs bzip2)"
+elif "${CC:-cc}" -lbz2 -E -xc /dev/null >/dev/null 2>&1; then
+    BZ_LIB="-lbz2"
+else
+    cat >&2 <<'EOF'
+ERROR: libbz2 development headers were not found.
 
+Install them with one of:
+
+    Debian / Ubuntu:  sudo apt-get install libbz2-dev
+    Fedora / RHEL:    sudo dnf install bzip2-devel
+    macOS (Homebrew): brew install bzip2
+    macOS (Xcode):    libbz2 should ship with the SDK; no extra steps.
+
+Then re-run install.packages("SpeedDada").
+EOF
+    exit 1
+fi
+
+# ── 4. Platform-specific link flags. ─────────────────────────────────────────
 # On macOS dl* symbols live in libSystem; no -ldl exists. On Linux/BSD use -ldl.
 case "$(uname -s)" in
     Darwin) DL_LIB="" ;;
     *)      DL_LIB="-ldl" ;;
 esac
 
+echo "SpeedDada: workspace=${WORKSPACE_ROOT}"
+echo "SpeedDada: cargo=${CARGO}"
+echo "SpeedDada: bzip2=${BZ_LIB}"
+
 sed -e "s|@WORKSPACE_ROOT@|${WORKSPACE_ROOT}|g" \
     -e "s|@CARGO@|${CARGO}|g" \
     -e "s|@DL_LIB@|${DL_LIB}|g" \
+    -e "s|@BZ_LIB@|${BZ_LIB}|g" \
     "${PKG_DIR}/src/Makevars.in" > "${PKG_DIR}/src/Makevars"

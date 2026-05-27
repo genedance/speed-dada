@@ -1,17 +1,17 @@
 #!/usr/bin/env Rscript
-# Benchmark: dada2rs (Rust core via extendr) on 6 paired manure samples.
-# Same API as bench_r.R — dada2rs is a drop-in replacement for dada2.
+# Benchmark: SpeedDada (Rust core via extendr) on 6 paired manure samples.
+# Same API as bench_r.R — SpeedDada is a drop-in replacement for dada2.
 
 .libPaths(c(path.expand("~/R/library"), .libPaths()))
 suppressPackageStartupMessages({
-  library(dada2rs)
+  library(SpeedDada)
   library(jsonlite)
 })
 
 args     <- commandArgs(trailingOnly = TRUE)
 n_threads <- if (length(args) >= 1) as.integer(args[1]) else 16L
 in_dir    <- if (length(args) >= 2) args[2] else "/Users/alex/Downloads/raw_data_FIELD"
-out_dir   <- if (length(args) >= 3) args[3] else "/tmp/bench_field_out/dada2rs"
+out_dir   <- if (length(args) >= 3) args[3] else "/tmp/bench_field_out/SpeedDada"
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
 # Rayon thread pool size is governed by RAYON_NUM_THREADS environment variable.
@@ -25,7 +25,7 @@ rev_filt <- file.path(out_dir, paste0(samples, "_R2_filt.fastq.gz"))
 names(fwd_filt) <- samples
 names(rev_filt) <- samples
 
-cat(sprintf("[dada2rs] RAYON_NUM_THREADS=%d  samples=%d\n",
+cat(sprintf("[SpeedDada] RAYON_NUM_THREADS=%d  samples=%d\n",
             n_threads, length(samples)))
 
 t_total <- proc.time()
@@ -80,7 +80,7 @@ cat(sprintf("  fwd_asvs(total)=%d  rev_asvs(total)=%d  (%.1f ms)\n",
 # 5. Merge
 cat("[mergePairs]\n")
 t <- proc.time()
-# dada2rs returns a single data.frame even when given lists, so loop manually.
+# SpeedDada returns a single data.frame even when given lists, so loop manually.
 merged <- mapply(function(dF, drF, dR, drR) {
   mergePairs(dF, drF, dR, drR)
 }, dadaF, derepF, dadaR, derepR, SIMPLIFY = FALSE)
@@ -99,7 +99,7 @@ cat(sprintf("  asvs_in=%d  asvs_out=%d  (%.1f ms)\n",
             ncol(seqtab), ncol(seqtab_clean), t_chimera))
 
 t_total_ms <- (proc.time() - t_total)[3] * 1000
-cat(sprintf("\nTotal dada2rs time: %.1f ms\n", t_total_ms))
+cat(sprintf("\nTotal SpeedDada time: %.1f ms\n", t_total_ms))
 
 sample_stats <- lapply(seq_along(samples), function(i) {
   list(sample     = samples[i],
@@ -108,7 +108,7 @@ sample_stats <- lapply(seq_along(samples), function(i) {
 })
 
 result <- list(
-  tool       = "dada2rs",
+  tool       = "SpeedDada",
   n_threads  = n_threads,
   total_ms   = round(t_total_ms, 1),
   stages = list(
@@ -128,6 +128,6 @@ result <- list(
          abundance = as.integer(sum(seqtab_clean[, j]))))
 )
 writeLines(toJSON(result, auto_unbox = TRUE, pretty = TRUE),
-           file.path(out_dir, "dada2rs_output.json"))
+           file.path(out_dir, "speeddada_output.json"))
 
-cat(sprintf("\nWrote %s\n", file.path(out_dir, "dada2rs_output.json")))
+cat(sprintf("\nWrote %s\n", file.path(out_dir, "speeddada_output.json")))

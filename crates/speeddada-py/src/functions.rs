@@ -1,20 +1,24 @@
-//! PyO3 pipeline function bindings for dada2-core.
+//! PyO3 pipeline function bindings for speeddada-core.
 // PyO3 functions returning PyResult document errors through Python exceptions,
 // not Rust doc-sections; and PyO3 macros consume return values automatically.
 #![allow(clippy::missing_errors_doc, clippy::must_use_candidate)]
 
 use crate::types::{
-    PyDadaResult, PyDerepResult, PyErrorModel, PyFilterConfig, PyFilterStats,
-    PyFilterStatsPaired, PyMergedRead, PyQualityProfile, PySequenceTable,
-    PyTaxonAssignment,
+    PyDadaResult, PyDerepResult, PyErrorModel, PyFilterConfig, PyFilterStats, PyFilterStatsPaired,
+    PyMergedRead, PyQualityProfile, PySequenceTable, PyTaxonAssignment,
 };
-use dada2_core::{
+use pyo3::prelude::*;
+use rayon::prelude::*;
+use speeddada_core::{
     chimera::remove_bimera_denovo,
     dada::{dada, dada_many, dada_pooled, dada_pseudo, DadaConfig},
     derep::{derep_fastq, derep_fastq_path},
     error_model::{learn_errors, ErrorLearningConfig},
     filter::{filter_and_trim, filter_and_trim_paired, FilterConfig},
-    io::{fasta::read_fasta, fastq::{read_fastq, read_fastq_n}},
+    io::{
+        fasta::read_fasta,
+        fastq::{read_fastq, read_fastq_n},
+    },
     merge::{merge_pairs, MergeConfig},
     primer::{trim_primers, PrimerConfig},
     quality_profile::quality_profile,
@@ -22,8 +26,6 @@ use dada2_core::{
     sequence_table::SequenceTable,
     taxonomy::{assign_taxonomy, load_lineage_tsv, TaxonomyConfig},
 };
-use pyo3::prelude::*;
-use rayon::prelude::*;
 use std::{collections::HashMap, path::Path, path::PathBuf};
 
 /// Return the crate version string.
@@ -112,11 +114,19 @@ pub fn trim_primers_py(
     let out = output_path.to_owned();
     let stats = py
         .allow_threads(move || {
-            let cfg = PrimerConfig { fwd_primer, rev_primer, max_mismatches, min_overlap };
+            let cfg = PrimerConfig {
+                fwd_primer,
+                rev_primer,
+                max_mismatches,
+                min_overlap,
+            };
             trim_primers(&cfg, Path::new(&inp), Path::new(&out))
         })
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-    Ok(PyFilterStats { reads_in: stats.reads_in, reads_out: stats.reads_out })
+    Ok(PyFilterStats {
+        reads_in: stats.reads_in,
+        reads_out: stats.reads_out,
+    })
 }
 
 /// Compute per-cycle quality statistics from a FASTQ file.
@@ -177,7 +187,10 @@ pub fn filter_and_trim_py(
     let stats = py
         .allow_threads(move || filter_and_trim(&cfg, Path::new(&inp), Path::new(&out)))
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-    Ok(PyFilterStats { reads_in: stats.reads_in, reads_out: stats.reads_out })
+    Ok(PyFilterStats {
+        reads_in: stats.reads_in,
+        reads_out: stats.reads_out,
+    })
 }
 
 /// Filter and trim paired-end FASTQ files in lock-step.
@@ -260,7 +273,10 @@ pub fn learn_errors_py(
                     break;
                 }
             }
-            let cfg = ErrorLearningConfig { n_reads, ..Default::default() };
+            let cfg = ErrorLearningConfig {
+                n_reads,
+                ..Default::default()
+            };
             learn_errors(&all_records, &cfg)
         })
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
@@ -315,7 +331,11 @@ pub fn dada_py(
     let uniques = derep.0.clone();
     let asvs = py
         .allow_threads(move || {
-            let cfg = DadaConfig { omega_a, pool, ..Default::default() };
+            let cfg = DadaConfig {
+                omega_a,
+                pool,
+                ..Default::default()
+            };
             dada(&uniques, &inner_em, &cfg)
         })
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
@@ -344,13 +364,16 @@ pub fn dada_pooled_py(
     omega_a: f64,
 ) -> PyResult<Vec<PyDadaResult>> {
     let inner_em = error_model.0.clone();
-    let converted: Vec<Vec<dada2_core::derep::UniqueSeq>> =
+    let converted: Vec<Vec<speeddada_core::derep::UniqueSeq>> =
         samples.iter().map(|d| d.0.clone()).collect();
     let results = py
         .allow_threads(move || {
-            let refs: Vec<&[dada2_core::derep::UniqueSeq]> =
+            let refs: Vec<&[speeddada_core::derep::UniqueSeq]> =
                 converted.iter().map(Vec::as_slice).collect();
-            let cfg = DadaConfig { omega_a, ..Default::default() };
+            let cfg = DadaConfig {
+                omega_a,
+                ..Default::default()
+            };
             dada_pooled(&refs, &inner_em, &cfg)
         })
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
@@ -378,13 +401,16 @@ pub fn dada_many_py(
     omega_a: f64,
 ) -> PyResult<Vec<PyDadaResult>> {
     let inner_em = error_model.0.clone();
-    let converted: Vec<Vec<dada2_core::derep::UniqueSeq>> =
+    let converted: Vec<Vec<speeddada_core::derep::UniqueSeq>> =
         samples.iter().map(|d| d.0.clone()).collect();
     let results = py
         .allow_threads(move || {
-            let refs: Vec<&[dada2_core::derep::UniqueSeq]> =
+            let refs: Vec<&[speeddada_core::derep::UniqueSeq]> =
                 converted.iter().map(Vec::as_slice).collect();
-            let cfg = DadaConfig { omega_a, ..Default::default() };
+            let cfg = DadaConfig {
+                omega_a,
+                ..Default::default()
+            };
             dada_many(&refs, &inner_em, &cfg)
         })
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
@@ -412,13 +438,16 @@ pub fn dada_pseudo_py(
     omega_a: f64,
 ) -> PyResult<Vec<PyDadaResult>> {
     let inner_em = error_model.0.clone();
-    let converted: Vec<Vec<dada2_core::derep::UniqueSeq>> =
+    let converted: Vec<Vec<speeddada_core::derep::UniqueSeq>> =
         samples.iter().map(|d| d.0.clone()).collect();
     let results = py
         .allow_threads(move || {
-            let refs: Vec<&[dada2_core::derep::UniqueSeq]> =
+            let refs: Vec<&[speeddada_core::derep::UniqueSeq]> =
                 converted.iter().map(Vec::as_slice).collect();
-            let cfg = DadaConfig { omega_a, ..Default::default() };
+            let cfg = DadaConfig {
+                omega_a,
+                ..Default::default()
+            };
             dada_pseudo(&refs, &inner_em, &cfg)
         })
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
@@ -452,7 +481,10 @@ pub fn merge_pairs_py(
     let inner_rev = rev_dada.0.clone();
     let merged = py
         .allow_threads(move || {
-            let cfg = MergeConfig { min_overlap, ..Default::default() };
+            let cfg = MergeConfig {
+                min_overlap,
+                ..Default::default()
+            };
             merge_pairs(&inner_fwd, &inner_rev, &cfg)
         })
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
@@ -526,7 +558,10 @@ pub fn assign_taxonomy_py(
                     })
                     .collect()
             };
-            let cfg = TaxonomyConfig { k, ..Default::default() };
+            let cfg = TaxonomyConfig {
+                k,
+                ..Default::default()
+            };
             assign_taxonomy(&seqs, &ref_records, &lineages, &cfg)
         })
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
@@ -577,61 +612,76 @@ pub fn run_pipeline_py(
 ) -> PyResult<HashMap<String, u32>> {
     let out_dir = output_dir.to_owned();
     let result = py
-        .allow_threads(move || -> Result<HashMap<String, u32>, dada2_core::Dada2Error> {
-            let out_dir_path = PathBuf::from(&out_dir);
-            std::fs::create_dir_all(&out_dir_path)?;
+        .allow_threads(
+            move || -> Result<HashMap<String, u32>, speeddada_core::Dada2Error> {
+                let out_dir_path = PathBuf::from(&out_dir);
+                std::fs::create_dir_all(&out_dir_path)?;
 
-            let filter_cfg = FilterConfig { trunc_len, max_ee, ..Default::default() };
+                let filter_cfg = FilterConfig {
+                    trunc_len,
+                    max_ee,
+                    ..Default::default()
+                };
 
-            // Filter samples in parallel.
-            let filtered_paths: Vec<PathBuf> = input_paths
-                .par_iter()
-                .enumerate()
-                .map(|(i, inp)| -> Result<PathBuf, dada2_core::Dada2Error> {
-                    let out = out_dir_path.join(format!("filtered_{i}.fastq"));
-                    filter_and_trim(&filter_cfg, Path::new(inp), &out)?;
-                    Ok(out)
-                })
-                .collect::<Result<_, _>>()?;
+                // Filter samples in parallel.
+                let filtered_paths: Vec<PathBuf> = input_paths
+                    .par_iter()
+                    .enumerate()
+                    .map(|(i, inp)| -> Result<PathBuf, speeddada_core::Dada2Error> {
+                        let out = out_dir_path.join(format!("filtered_{i}.fastq"));
+                        filter_and_trim(&filter_cfg, Path::new(inp), &out)?;
+                        Ok(out)
+                    })
+                    .collect::<Result<_, _>>()?;
 
-            // Sample reads for error learning — cap total at n_reads regardless of
-            // sample count so peak RAM stays bounded for 1000-sample workflows.
-            let em_cfg = ErrorLearningConfig::default();
-            let per_file = RuntimeConfig::reads_per_file(
-                em_cfg.n_reads, filtered_paths.len(), 5_000,
-            );
-            let mut all_records = Vec::with_capacity(em_cfg.n_reads);
-            for path in &filtered_paths {
-                all_records.extend(read_fastq_n(path, per_file)?);
-                if all_records.len() >= em_cfg.n_reads { break; }
-            }
-            let error_model = learn_errors(&all_records, &em_cfg)?;
-            drop(all_records); // release before parallel phase
+                // Sample reads for error learning — cap total at n_reads regardless of
+                // sample count so peak RAM stays bounded for 1000-sample workflows.
+                let em_cfg = ErrorLearningConfig::default();
+                let per_file =
+                    RuntimeConfig::reads_per_file(em_cfg.n_reads, filtered_paths.len(), 5_000);
+                let mut all_records = Vec::with_capacity(em_cfg.n_reads);
+                for path in &filtered_paths {
+                    all_records.extend(read_fastq_n(path, per_file)?);
+                    if all_records.len() >= em_cfg.n_reads {
+                        break;
+                    }
+                }
+                let error_model = learn_errors(&all_records, &em_cfg)?;
+                drop(all_records); // release before parallel phase
 
-            // Dereplicate and denoise each sample in parallel using streaming
-            // derep — no intermediate Vec<FastqRecord>, no double file-read.
-            let dada_cfg = DadaConfig { omega_a, ..Default::default() };
-            let all_asvs: Vec<(Vec<u8>, u32)> = filtered_paths
-                .par_iter()
-                .map(|path| -> Result<Vec<(Vec<u8>, u32)>, dada2_core::Dada2Error> {
-                    let uniques = derep_fastq_path(path)?;
-                    let asvs = dada(&uniques, &error_model, &dada_cfg)?;
-                    Ok(asvs.into_iter().map(|a| (a.sequence, a.abundance)).collect())
-                })
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .flatten()
-                .collect();
+                // Dereplicate and denoise each sample in parallel using streaming
+                // derep — no intermediate Vec<FastqRecord>, no double file-read.
+                let dada_cfg = DadaConfig {
+                    omega_a,
+                    ..Default::default()
+                };
+                let all_asvs: Vec<(Vec<u8>, u32)> = filtered_paths
+                    .par_iter()
+                    .map(
+                        |path| -> Result<Vec<(Vec<u8>, u32)>, speeddada_core::Dada2Error> {
+                            let uniques = derep_fastq_path(path)?;
+                            let asvs = dada(&uniques, &error_model, &dada_cfg)?;
+                            Ok(asvs
+                                .into_iter()
+                                .map(|a| (a.sequence, a.abundance))
+                                .collect())
+                        },
+                    )
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect();
 
-            let clean = remove_bimera_denovo(&all_asvs)?;
+                let clean = remove_bimera_denovo(&all_asvs)?;
 
-            let mut out_map = HashMap::new();
-            for (seq, abund) in clean {
-                let hex = dada2_core::bytes_to_hex(&seq);
-                *out_map.entry(hex).or_insert(0) += abund;
-            }
-            Ok(out_map)
-        })
+                let mut out_map = HashMap::new();
+                for (seq, abund) in clean {
+                    let hex = speeddada_core::bytes_to_hex(&seq);
+                    *out_map.entry(hex).or_insert(0) += abund;
+                }
+                Ok(out_map)
+            },
+        )
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
     Ok(result)
 }
@@ -667,7 +717,7 @@ pub fn run_pipeline_py(
 #[pyfunction]
 #[pyo3(name = "run_pipeline_samples")]
 #[pyo3(signature = (
-    fwd_paths, rev_paths = None, output_dir = "/tmp/dada2_out",
+    fwd_paths, rev_paths = None, output_dir = None,
     trunc_len_fwd = 0, trunc_len_rev = 0,
     max_ee_fwd = 2.0, max_ee_rev = 5.0,
     min_overlap = 20, omega_a = 1e-40, n_reads_learn = 1_000_000
@@ -677,7 +727,7 @@ pub fn run_pipeline_samples_py(
     py: Python<'_>,
     fwd_paths: Vec<String>,
     rev_paths: Option<Vec<String>>,
-    output_dir: &str,
+    output_dir: Option<String>,
     trunc_len_fwd: usize,
     trunc_len_rev: usize,
     max_ee_fwd: f64,
@@ -686,15 +736,30 @@ pub fn run_pipeline_samples_py(
     omega_a: f64,
     n_reads_learn: usize,
 ) -> PyResult<HashMap<String, HashMap<String, u32>>> {
-    let out_dir = output_dir.to_owned();
-    let result = py.allow_threads(move || {
-        run_samples_inner(
-            fwd_paths, rev_paths, out_dir,
-            trunc_len_fwd, trunc_len_rev,
-            max_ee_fwd, max_ee_rev,
-            min_overlap, omega_a, n_reads_learn,
-        )
-    }).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    // Cross-platform default: <OS temp>/speeddada_out instead of a Unix-only
+    // hard-coded /tmp path (would crash on Windows).
+    let out_dir = output_dir.unwrap_or_else(|| {
+        std::env::temp_dir()
+            .join("speeddada_out")
+            .to_string_lossy()
+            .into_owned()
+    });
+    let result = py
+        .allow_threads(move || {
+            run_samples_inner(
+                fwd_paths,
+                rev_paths,
+                out_dir,
+                trunc_len_fwd,
+                trunc_len_rev,
+                max_ee_fwd,
+                max_ee_rev,
+                min_overlap,
+                omega_a,
+                n_reads_learn,
+            )
+        })
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
     Ok(result)
 }
 
@@ -710,7 +775,7 @@ fn run_samples_inner(
     min_overlap: usize,
     omega_a: f64,
     n_reads_learn: usize,
-) -> Result<HashMap<String, HashMap<String, u32>>, dada2_core::Dada2Error> {
+) -> Result<HashMap<String, HashMap<String, u32>>, speeddada_core::Dada2Error> {
     use std::path::PathBuf;
 
     let out_dir_path = PathBuf::from(&out_dir);
@@ -718,14 +783,22 @@ fn run_samples_inner(
 
     let n_samples = fwd_paths.len();
     let paired = rev_paths.is_some();
-    let cfg_fwd = FilterConfig { trunc_len: trunc_len_fwd, max_ee: max_ee_fwd, ..Default::default() };
-    let cfg_rev = FilterConfig { trunc_len: trunc_len_rev, max_ee: max_ee_rev, ..Default::default() };
+    let cfg_fwd = FilterConfig {
+        trunc_len: trunc_len_fwd,
+        max_ee: max_ee_fwd,
+        ..Default::default()
+    };
+    let cfg_rev = FilterConfig {
+        trunc_len: trunc_len_rev,
+        max_ee: max_ee_rev,
+        ..Default::default()
+    };
 
     // ── 1. Filter all samples in parallel ────────────────────────────────────
     let filtered: Vec<(String, PathBuf, Option<PathBuf>)> = fwd_paths
         .par_iter()
         .enumerate()
-        .map(|(i, fwd)| -> Result<_, dada2_core::Dada2Error> {
+        .map(|(i, fwd)| -> Result<_, speeddada_core::Dada2Error> {
             let stem = Path::new(fwd)
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -736,9 +809,12 @@ fn run_samples_inner(
                 let rev = rev_paths.as_ref().unwrap()[i].as_str();
                 let filt_rev = out_dir_path.join(format!("filt_rev_{i}.fastq"));
                 filter_and_trim_paired(
-                    &cfg_fwd, &cfg_rev,
-                    Path::new(fwd), Path::new(rev),
-                    &filt_fwd, &filt_rev,
+                    &cfg_fwd,
+                    &cfg_rev,
+                    Path::new(fwd),
+                    Path::new(rev),
+                    &filt_fwd,
+                    &filt_rev,
                 )?;
                 Ok((name, filt_fwd, Some(filt_rev)))
             } else {
@@ -749,45 +825,61 @@ fn run_samples_inner(
         .collect::<Result<_, _>>()?;
 
     // ── 2. Learn errors from a capped sample across all filtered fwd files ───
-    let em_cfg = ErrorLearningConfig { n_reads: n_reads_learn, ..Default::default() };
+    let em_cfg = ErrorLearningConfig {
+        n_reads: n_reads_learn,
+        ..Default::default()
+    };
     let per_file = RuntimeConfig::reads_per_file(n_reads_learn, n_samples, 5_000);
     let mut learn_records = Vec::with_capacity(n_reads_learn);
     for (_, filt_fwd, _) in &filtered {
         learn_records.extend(read_fastq_n(filt_fwd, per_file)?);
-        if learn_records.len() >= n_reads_learn { break; }
+        if learn_records.len() >= n_reads_learn {
+            break;
+        }
     }
     let error_model = learn_errors(&learn_records, &em_cfg)?;
     drop(learn_records);
 
     // ── 3. Denoise each sample in parallel (streaming derep, no double-read) ─
-    let merge_cfg = MergeConfig { min_overlap, ..Default::default() };
-    let dada_cfg  = DadaConfig { omega_a, ..Default::default() };
+    let merge_cfg = MergeConfig {
+        min_overlap,
+        ..Default::default()
+    };
+    let dada_cfg = DadaConfig {
+        omega_a,
+        ..Default::default()
+    };
 
     let results: HashMap<String, HashMap<String, u32>> = filtered
         .par_iter()
-        .map(|(name, filt_fwd, filt_rev)| -> Result<_, dada2_core::Dada2Error> {
-            let fwd_uniq = derep_fastq_path(filt_fwd)?;
-            let fwd_asvs = dada(&fwd_uniq, &error_model, &dada_cfg)?;
+        .map(
+            |(name, filt_fwd, filt_rev)| -> Result<_, speeddada_core::Dada2Error> {
+                let fwd_uniq = derep_fastq_path(filt_fwd)?;
+                let fwd_asvs = dada(&fwd_uniq, &error_model, &dada_cfg)?;
 
-            let pairs: Vec<(Vec<u8>, u32)> = if let Some(rev_path) = filt_rev {
-                let rev_uniq = derep_fastq_path(rev_path)?;
-                let rev_asvs = dada(&rev_uniq, &error_model, &dada_cfg)?;
-                merge_pairs(&fwd_asvs, &rev_asvs, &merge_cfg)?
-                    .into_iter()
-                    .map(|m| (m.sequence, m.abundance))
-                    .collect()
-            } else {
-                fwd_asvs.into_iter().map(|a| (a.sequence, a.abundance)).collect()
-            };
+                let pairs: Vec<(Vec<u8>, u32)> = if let Some(rev_path) = filt_rev {
+                    let rev_uniq = derep_fastq_path(rev_path)?;
+                    let rev_asvs = dada(&rev_uniq, &error_model, &dada_cfg)?;
+                    merge_pairs(&fwd_asvs, &rev_asvs, &merge_cfg)?
+                        .into_iter()
+                        .map(|m| (m.sequence, m.abundance))
+                        .collect()
+                } else {
+                    fwd_asvs
+                        .into_iter()
+                        .map(|a| (a.sequence, a.abundance))
+                        .collect()
+                };
 
-            let clean = remove_bimera_denovo(&pairs)?;
-            let mut sample_map = HashMap::new();
-            for (seq, abund) in clean {
-                let hex = dada2_core::bytes_to_hex(&seq);
-                *sample_map.entry(hex).or_insert(0u32) += abund;
-            }
-            Ok((name.clone(), sample_map))
-        })
+                let clean = remove_bimera_denovo(&pairs)?;
+                let mut sample_map = HashMap::new();
+                for (seq, abund) in clean {
+                    let hex = speeddada_core::bytes_to_hex(&seq);
+                    *sample_map.entry(hex).or_insert(0u32) += abund;
+                }
+                Ok((name.clone(), sample_map))
+            },
+        )
         .collect::<Result<_, _>>()?;
 
     Ok(results)

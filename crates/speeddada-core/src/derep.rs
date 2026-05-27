@@ -1,6 +1,6 @@
 //! Stage 4 — Dereplication: collapse identical sequences and count abundances.
 
-use crate::{Dada2Error, io::fastq::FastqRecord};
+use crate::{io::fastq::FastqRecord, Dada2Error};
 use std::{collections::HashMap, path::Path};
 
 /// A unique sequence with its observed count and representative quality scores.
@@ -71,7 +71,9 @@ pub fn derep_fastq_path(path: &Path) -> Result<Vec<UniqueSeq>, Dada2Error> {
         let rec = rec.map_err(|e| Dada2Error::Parse(e.to_string()))?;
         let seq = rec.seq().to_vec();
         let qual = rec.qual().map(<[u8]>::to_vec).unwrap_or_default();
-        let entry = map.entry(seq).or_insert_with_key(|s| (0, vec![0.0f64; s.len()]));
+        let entry = map
+            .entry(seq)
+            .or_insert_with_key(|s| (0, vec![0.0f64; s.len()]));
         entry.0 += 1;
         for (i, &qc) in qual.iter().enumerate() {
             if i < entry.1.len() {
@@ -88,7 +90,11 @@ pub fn derep_fastq_path(path: &Path) -> Result<Vec<UniqueSeq>, Dada2Error> {
 fn finish_derep(map: HashMap<Vec<u8>, (u32, Vec<f64>)>) -> Result<Vec<UniqueSeq>, Dada2Error> {
     let mut uniques: Vec<UniqueSeq> = map
         .into_iter()
-        .map(|(seq, (count, qual_sum))| UniqueSeq { seq, count, qual_sum })
+        .map(|(seq, (count, qual_sum))| UniqueSeq {
+            seq,
+            count,
+            qual_sum,
+        })
         .collect();
     uniques.sort_unstable_by(|a, b| b.count.cmp(&a.count).then_with(|| a.seq.cmp(&b.seq)));
     let total: u64 = uniques.iter().map(|u| u64::from(u.count)).sum();

@@ -1,17 +1,24 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/dada2-core",
-    "crates/dada2-py",
-    "crates/dada2-r",
+    "crates/speeddada-core",
+    "crates/speeddada-py",
+    "crates/speeddada-r",
 ]
 
 [workspace.package]
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.78"
-authors = ["dada2-rs contributors"]
-license = "MIT"
+version       = "0.99.0"
+edition       = "2021"
+rust-version  = "1.78"
+authors       = ["Alexandre Jousset <info@genedance.com>"]
+license       = "MIT"
+description   = "High-performance DADA2 amplicon sequence variant pipeline — Rust core with Python and R bindings."
+homepage      = "https://github.com/Genedance/speed-dada"
+repository    = "https://github.com/Genedance/speed-dada"
+documentation = "https://genedance.github.io/speed-dada/"
+keywords      = ["bioinformatics", "amplicon", "dada2", "microbiome", "asv"]
+categories    = ["science", "command-line-utilities"]
+readme        = "README.md"
 
 [workspace.dependencies]
 rayon          = "1"
@@ -28,9 +35,9 @@ env_logger     = "0.11"
 tempfile       = "3"
 pyo3           = { version = "0.23", features = ["extension-module"] }
 extendr-api    = { version = "0.9", default-features = false }
-dada2-core     = { path = "crates/dada2-core" }
+speeddada-core = { path = "crates/speeddada-core", version = "0.99.0" }
 
 [profile.release]
-opt-level = 3
-lto = "thin"
+opt-level     = 3
+lto           = "thin"
 codegen-units = 1

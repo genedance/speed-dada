@@ -1,20 +1,46 @@
 [build-system]
-requires = ["maturin>=1.5,<2"]
+requires      = ["maturin>=1.5,<2"]
 build-backend = "maturin"
 
 [project]
-name = "dada2"
-version = "0.1.0"
-description = "High-performance DADA2 ASV pipeline — Rust core with Python bindings"
+name            = "speeddada"
+version         = "0.99.0"
+description     = "High-performance DADA2 amplicon sequence variant pipeline — Rust core with Python bindings."
+readme          = "README.md"
+license         = { file = "LICENSE" }
+authors         = [{ name = "Alexandre Jousset", email = "info@genedance.com" }]
+maintainers     = [{ name = "Alexandre Jousset", email = "info@genedance.com" }]
 requires-python = ">=3.9"
+keywords        = ["bioinformatics", "amplicon", "asv", "dada2", "microbiome", "16s", "metagenomics"]
 classifiers = [
-    "Programming Language :: Rust",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 
+[project.urls]
+Homepage      = "https://github.com/Genedance/speed-dada"
+Repository    = "https://github.com/Genedance/speed-dada"
+Issues        = "https://github.com/Genedance/speed-dada/issues"
+Documentation = "https://genedance.github.io/speed-dada/"
+Changelog     = "https://github.com/Genedance/speed-dada/blob/main/CHANGELOG.md"
+
 [tool.maturin]
-features = ["pyo3/extension-module"]
-module-name = "dada2"
+features      = ["pyo3/extension-module"]
+module-name   = "speeddada._native"
+python-source = "python"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

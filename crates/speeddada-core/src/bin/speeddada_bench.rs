@@ -1,12 +1,12 @@
-//! Standalone dada2-core benchmark binary — no Python or R bindings.
+//! Standalone speeddada-core benchmark binary — no Python or R bindings.
 //!
 //! Runs the full pipeline (filter → learn_errors → derep → dada_pseudo
 //! → merge → chimera) on N paired FASTQ samples and emits per-stage timings
 //! plus a JSON summary in the same format as `bench_rust.py` /
-//! `bench_dada2rs.R`.
+//! `bench_speeddada.R`.
 //!
 //! Usage:
-//!   dada2-bench --threads 16 --in-dir <dir> --out-dir <dir>
+//!   speeddada-bench --threads 16 --in-dir <dir> --out-dir <dir>
 //!               --samples stem1,stem2,stem3
 //!               [--fwd-suffix .1.fq.gz] [--rev-suffix .2.fq.gz]
 //!               [--prefix raw.]
@@ -15,7 +15,8 @@
 //!   <in-dir>/<prefix><stem><fwd-suffix>
 //!   <in-dir>/<prefix><stem><rev-suffix>
 
-use dada2_core::{
+use serde::Serialize;
+use speeddada_core::{
     chimera::remove_bimera_denovo,
     dada::{dada_pseudo, Asv, DadaConfig},
     derep::derep_fastq,
@@ -24,12 +25,7 @@ use dada2_core::{
     io::fastq::read_fastq,
     merge::{merge_pairs, MergeConfig},
 };
-use serde::Serialize;
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    time::Instant,
-};
+use std::{collections::HashMap, path::PathBuf, time::Instant};
 
 fn parse_arg(args: &[String], name: &str) -> Option<String> {
     let key = format!("--{name}");
@@ -106,7 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     std::fs::create_dir_all(&out_dir)?;
     println!(
-        "[rust-only dada2-bench] n_threads={n_threads}  samples={}",
+        "[rust-only speeddada-bench] n_threads={n_threads}  samples={}",
         samples.len()
     );
 
@@ -129,7 +125,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let t_total = Instant::now();
 
-    // 1. Filter — same params as bench_rust.py / bench_dada2rs.R on field data.
+    // 1. Filter — same params as bench_rust.py / bench_speeddada.R on field data.
     println!("[filter_and_trim_paired]");
     let t = Instant::now();
     let cfg_fwd = FilterConfig {
@@ -171,17 +167,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for p in &fwd_filt {
         fwd_records.extend(read_fastq(p)?);
     }
-    let err_fwd = learn_errors(&fwd_records, &ErrorLearningConfig::default()).unwrap_or_else(|_| {
-        dada2_core::error_model::ErrorModel::illumina_default()
-    });
+    let err_fwd = learn_errors(&fwd_records, &ErrorLearningConfig::default())
+        .unwrap_or_else(|_| speeddada_core::error_model::ErrorModel::illumina_default());
     drop(fwd_records);
     let mut rev_records = Vec::new();
     for p in &rev_filt {
         rev_records.extend(read_fastq(p)?);
     }
-    let err_rev = learn_errors(&rev_records, &ErrorLearningConfig::default()).unwrap_or_else(|_| {
-        dada2_core::error_model::ErrorModel::illumina_default()
-    });
+    let err_rev = learn_errors(&rev_records, &ErrorLearningConfig::default())
+        .unwrap_or_else(|_| speeddada_core::error_model::ErrorModel::illumina_default());
     drop(rev_records);
     let t_errors = ms(t.elapsed());
     println!("  done  ({t_errors:.1} ms)");
@@ -189,14 +183,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 3. Derep — per sample.
     println!("[derep_fastq]");
     let t = Instant::now();
-    let derep_fwd: Vec<Vec<dada2_core::derep::UniqueSeq>> = fwd_filt
+    let derep_fwd: Vec<Vec<speeddada_core::derep::UniqueSeq>> = fwd_filt
         .iter()
         .map(|p| {
             let recs = read_fastq(p).expect("fwd derep read_fastq");
             derep_fastq(&recs).expect("fwd derep")
         })
         .collect();
-    let derep_rev: Vec<Vec<dada2_core::derep::UniqueSeq>> = rev_filt
+    let derep_rev: Vec<Vec<speeddada_core::derep::UniqueSeq>> = rev_filt
         .iter()
         .map(|p| {
             let recs = read_fastq(p).expect("rev derep read_fastq");
@@ -210,18 +204,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("[dada pseudo-pool]");
     let t = Instant::now();
     let cfg = DadaConfig::default();
-    let refs_fwd: Vec<&[dada2_core::derep::UniqueSeq]> =
+    let refs_fwd: Vec<&[speeddada_core::derep::UniqueSeq]> =
         derep_fwd.iter().map(|v| v.as_slice()).collect();
     let dada_fwd: Vec<Vec<Asv>> = dada_pseudo(&refs_fwd, &err_fwd, &cfg)?;
-    let refs_rev: Vec<&[dada2_core::derep::UniqueSeq]> =
+    let refs_rev: Vec<&[speeddada_core::derep::UniqueSeq]> =
         derep_rev.iter().map(|v| v.as_slice()).collect();
     let dada_rev: Vec<Vec<Asv>> = dada_pseudo(&refs_rev, &err_rev, &cfg)?;
     let t_dada = ms(t.elapsed());
     let n_asv_fwd: usize = dada_fwd.iter().map(Vec::len).sum();
     let n_asv_rev: usize = dada_rev.iter().map(Vec::len).sum();
-    println!(
-        "  fwd_asvs(total)={n_asv_fwd}  rev_asvs(total)={n_asv_rev}  ({t_dada:.1} ms)"
-    );
+    println!("  fwd_asvs(total)={n_asv_fwd}  rev_asvs(total)={n_asv_rev}  ({t_dada:.1} ms)");
 
     // 5. Merge — per sample.
     println!("[merge_pairs]");
@@ -231,7 +223,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_mismatches: 0,
         just_concatenate: false,
     };
-    let merged_per_sample: Vec<Vec<dada2_core::merge::MergedRead>> = (0..samples.len())
+    let merged_per_sample: Vec<Vec<speeddada_core::merge::MergedRead>> = (0..samples.len())
         .map(|i| merge_pairs(&dada_fwd[i], &dada_rev[i], &merge_cfg).unwrap_or_default())
         .collect();
     let t_merge = ms(t.elapsed());
