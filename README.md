@@ -654,16 +654,42 @@ Python ≥ 3.9). Windows builds use Rtools' MinGW64 toolchain via
 
 ## Installation (end-user quick path)
 
+Distributed via **GitHub Releases** for now. PyPI (`pip install
+speeddada`) and Bioconductor (`BiocManager::install("SpeedDada")`) will
+land after the initial public-release testing window.
+
+**Python — pre-built wheel (no Rust toolchain needed):**
+
+Grab the wheel that matches your platform from the
+[v0.99.0 release page](https://github.com/Genedance/speed-dada/releases/tag/v0.99.0)
+and `pip install <url>`:
+
 ```bash
-# Python
-pip install speeddada
+# example for linux x86_64 + cpython 3.12; substitute your platform tag
+pip install "https://github.com/Genedance/speed-dada/releases/download/v0.99.0/speeddada-0.99.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
 ```
 
+**Python — source install (any platform, needs Rust):**
+
+```bash
+pip install "git+https://github.com/Genedance/speed-dada.git@v0.99.0#subdirectory=crates/speeddada-py"
+```
+
+**R — pre-built source tarball:**
+
 ```r
-# R — Bioconductor (planned)
-BiocManager::install("SpeedDada")
-# R — Github (current source install)
-remotes::install_github("Genedance/speed-dada", subdir = "r-package/SpeedDada")
+install.packages(
+  "https://github.com/Genedance/speed-dada/releases/download/v0.99.0/SpeedDada_0.99.0.tar.gz",
+  repos = NULL, type = "source"
+)
+```
+
+**R — install from GitHub (needs Rust + libbz2):**
+
+```r
+remotes::install_github("Genedance/speed-dada",
+                        ref    = "v0.99.0",
+                        subdir = "r-package/SpeedDada")
 ```
 
 See the **Building** section above for development builds and the

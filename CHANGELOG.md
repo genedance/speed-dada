@@ -7,8 +7,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## 0.99.0 — 2026-05-27
 
 Initial public release under the **speed-dada** brand (R: `SpeedDada`,
-Python: `speeddada`). Prepared for submission to Bioconductor (R) and
-PyPI (Python).
+Python: `speeddada`).
+
+Distributed via **GitHub Releases** for this version: pre-built Python
+wheels (Linux x86_64 + aarch64, macOS x86_64 + arm64, Windows x86_64) and
+the R source tarball are attached to each tagged release. PyPI and
+Bioconductor submission will follow once the GitHub channel has had a
+testing window.
 
 ### Added
 

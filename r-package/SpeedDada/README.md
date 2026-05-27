@@ -13,23 +13,37 @@ uses **~10x less peak memory**.
 
 ## Installation
 
-SpeedDada is currently a source-only package. You need a Rust toolchain
-(install via [rustup](https://rustup.rs)) and R >= 4.1.
+SpeedDada is distributed via **GitHub Releases** for now (Bioconductor
+submission will follow after the initial testing window). The package
+ships as source, so you need:
 
-### From Bioconductor (planned)
+* R >= 4.1
+* A Rust toolchain (install via [rustup](https://rustup.rs))
+* `libbz2-dev` (Linux only — `apt install libbz2-dev` / `dnf install bzip2-devel`)
+
+### From a release tarball (recommended)
 
 ```r
-if (!require("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
-BiocManager::install("SpeedDada")
+install.packages(
+  "https://github.com/Genedance/speed-dada/releases/download/v0.99.0/SpeedDada_0.99.0.tar.gz",
+  repos = NULL, type = "source"
+)
 ```
 
-### From GitHub (current)
+### From GitHub at a tag
 
 ```r
 # install.packages("remotes")
 remotes::install_github("Genedance/speed-dada",
+                        ref    = "v0.99.0",
                         subdir = "r-package/SpeedDada")
+```
+
+### Future channels (planned)
+
+```r
+# Bioconductor — after initial testing window
+BiocManager::install("SpeedDada")
 ```
 
 ## Quick start

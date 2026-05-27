@@ -7,10 +7,8 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Required for OIDC PyPI Trusted Publishing.
 permissions:
   contents: read
-  id-token: write
 
 jobs:
 
@@ -123,21 +121,61 @@ jobs:
           name: wheels-sdist
           path: crates/speeddada-py/dist
 
-  # ─── Publish to PyPI on tag (OIDC trusted publishing) ──────────────────────
-  release:
-    name: Release to PyPI
+  # ─── Build the R source tarball (vendored Rust src) on tag ────────────────
+  r-tarball:
+    name: Build R source tarball
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, linux-aarch64, macos, windows, sdist]
-    environment:
-      name: pypi
-      url: https://pypi.org/p/speeddada
     steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+      - uses: r-lib/actions/setup-pandoc@v2
+      - name: Install R dependencies for vignette build
+        run: |
+          Rscript -e 'install.packages(c("knitr","rmarkdown"), repos="https://cloud.r-project.org")'
+      - name: Vendor Rust crates into r-package/SpeedDada/src/rust
+        run: bash tools/vendor-r-rust.sh
+      - name: Build source tarball
+        run: R CMD build r-package/SpeedDada
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r-source-tarball
+          path: SpeedDada_*.tar.gz
+
+  # ─── Attach Python wheels + sdist + R tarball to the GitHub Release ───────
+  # Users install via `pip install <wheel-url>` /
+  # `install.packages(<tarball-url>, repos = NULL)` until PyPI + Bioconductor
+  # publishing are enabled. To switch the Python publish target to PyPI,
+  # restore the previous `release: Release to PyPI` job (see git history)
+  # and configure a Trusted Publisher on pypi.org pointing at this repo +
+  # wheels.yml + the `pypi` environment.
+  release:
+    name: Attach wheels + R tarball to GitHub Release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, linux-aarch64, macos, windows, sdist, r-tarball]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: dist
+      - name: List built artefacts
+        run: ls -la dist/
+      - name: Upload wheels + sdist + R tarball to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Create the release if it doesn't exist yet, then attach assets.
+          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "speed-dada ${GITHUB_REF_NAME}" \
+              --notes-file CHANGELOG.md \
+              --verify-tag
+          fi
+          gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
