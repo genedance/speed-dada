@@ -28,6 +28,7 @@ pub mod primer;
 pub mod quality_profile;
 pub mod runtime;
 pub mod sequence_table;
+pub mod species;
 pub mod taxonomy;
 
 #[cfg(test)]

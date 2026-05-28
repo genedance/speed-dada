@@ -1,7 +1,7 @@
 Package: SpeedDada
 Type: Package
 Title: High-Performance Drop-In Replacement for DADA2 (Rust Core)
-Version: 0.99.1
+Version: 0.99.2
 Authors@R: c(
     person(given = "Alexandre",
            family = "Jousset",

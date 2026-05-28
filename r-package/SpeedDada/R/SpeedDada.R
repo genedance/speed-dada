@@ -94,6 +94,65 @@ filterAndTrim <- function(fwd, filt, rev = NULL, filt.rev = NULL,
   invisible(mat)
 }
 
+# ── 1b. removePrimers ────────────────────────────────────────────────────────
+
+#' Remove PCR Primers from FASTQ Reads
+#'
+#' Drop-in replacement for \code{dada2::removePrimers}. Locates the forward
+#' and reverse primers in each read and writes the trimmed insert to
+#' \code{fout}. Reads where either primer cannot be matched within
+#' \code{max.mismatch} are discarded.
+#'
+#' @param fn Character vector of input FASTQ paths.
+#' @param fout Character vector of output FASTQ paths.
+#' @param primer.fwd Forward primer sequence (5'->3'). Empty string skips.
+#' @param primer.rev Reverse primer sequence (5'->3' on the same strand
+#'   as the read; SpeedDada matches it near the 3' end). Empty string skips.
+#' @param max.mismatch Maximum mismatches when locating each primer.
+#' @param min.overlap Minimum primer bases required to call a match.
+#' @param orient Accepted for compatibility; SpeedDada always searches the
+#'   forward orientation only. Reverse-orientation reads should be reverse-
+#'   complemented before calling this function.
+#' @param allow.indels Not supported; raises an error if \code{TRUE}.
+#' @param compress Accepted for compatibility; output is plain FASTQ.
+#' @param verbose Logical: ignored.
+#' @param ... Extra arguments ignored.
+#'
+#' @return Integer matrix [files x 2] with column names
+#'   \code{c("reads.in", "reads.out")}.
+#'
+#' @export
+removePrimers <- function(fn, fout, primer.fwd = "", primer.rev = "",
+                          max.mismatch = 2L, min.overlap = 4L,
+                          orient = TRUE, allow.indels = FALSE,
+                          compress = TRUE, verbose = FALSE, ...) {
+  if (isTRUE(allow.indels))
+    stop("SpeedDada: removePrimers(allow.indels = TRUE) is not supported; ",
+         "the current primer matcher uses Hamming distance only")
+  if (length(fn) != length(fout))
+    stop("SpeedDada: length(fn) must equal length(fout)")
+
+  raw <- .Call("wrap__removePrimers",
+    as.character(fn),
+    as.character(fout),
+    as.character(primer.fwd %||% ""),
+    as.character(primer.rev %||% ""),
+    as.integer(max.mismatch),
+    as.integer(min.overlap),
+    isTRUE(orient))
+
+  mat <- matrix(
+    c(as.integer(raw$reads_in), as.integer(raw$reads_out)),
+    nrow = length(raw$reads_in),
+    ncol = 2L,
+    dimnames = list(raw$rownames, c("reads.in", "reads.out"))
+  )
+  invisible(mat)
+}
+
+# Local NULL-coalesce so users don't need to depend on rlang.
+`%||%` <- function(a, b) if (is.null(a)) b else a
+
 # ── 2. learnErrors ───────────────────────────────────────────────────────────
 
 #' Learn Error Rates from FASTQ Files
@@ -101,10 +160,22 @@ filterAndTrim <- function(fwd, filt, rev = NULL, filt.rev = NULL,
 #' Drop-in replacement for \code{dada2::learnErrors}. Estimates a substitution
 #' error model from FASTQ data using the Rust EM implementation.
 #'
+#' The default \code{errFun = "auto"} sniffs the quality profile and picks
+#' \code{loess} for full-range Illumina (MiSeq / HiSeq full quality),
+#' \code{binned} for binned-quality platforms (NovaSeq, NextSeq, MGI
+#' DNBSEQ), or \code{pacbio} for near-Q40 long reads (PacBio CCS / HiFi).
+#' Oxford Nanopore data is detected and warned about — the substitution-
+#' dominant model used here will not track ONT's indel-heavy errors well;
+#' proper ONT support requires indel-aware alignment.
+#'
 #' @param fls Character vector of FASTQ paths, or a directory containing them.
 #' @param nbases Total bases to use for learning (converted to approx. read
 #'   count internally).
+#' @param errFun One of \code{"auto"} (default), \code{"loess"},
+#'   \code{"binned"}, \code{"pacbio"}, or \code{"logistic"}. Maps to dada2's
+#'   \code{loessErrfun} / \code{makeBinnedQualErrfun} / \code{PacBioErrfun}.
 #' @param multithread Accepted for compatibility; Rust uses Rayon automatically.
+#' @param verbose Logical: if \code{TRUE}, print the detected platform / errFun.
 #' @param ... Extra arguments ignored for compatibility.
 #'
 #' @return Opaque error-model handle (an R \code{externalptr}) consumed by
@@ -116,12 +187,35 @@ filterAndTrim <- function(fwd, filt, rev = NULL, filt.rev = NULL,
 #' err
 #'
 #' @export
-learnErrors <- function(fls, nbases = 1e8, multithread = FALSE, ...) {
+learnErrors <- function(fls, nbases = 1e8, errFun = "auto",
+                        multithread = FALSE, verbose = FALSE, ...) {
   .ignore_multithread(multithread)
   if (length(fls) == 1L && dir.exists(fls)) {
     fls <- list.files(fls, pattern = "\\.fastq(\\.gz)?$", full.names = TRUE)
   }
-  .Call("wrap__learnErrors", as.character(fls), as.double(nbases))
+  errFun <- tolower(as.character(errFun))[1L]
+  if (identical(errFun, "auto")) {
+    info <- .Call("wrap__detectErrFun", as.character(fls), as.double(nbases))
+    if (isTRUE(verbose)) {
+      message(sprintf(
+        "SpeedDada::learnErrors auto-detect: platform=%s, distinct_q=%d, mean_q=%.1f, max_q=%d, mean_len=%.0f",
+        info$kind, as.integer(info$distinct_q),
+        as.numeric(info$mean_q), as.integer(info$max_q),
+        as.numeric(info$mean_len)))
+    }
+    if (as.numeric(info$mean_q) < 20 && as.numeric(info$mean_len) > 500) {
+      warning(
+        "SpeedDada: input looks like Oxford Nanopore (mean Phred ",
+        sprintf("%.1f", as.numeric(info$mean_q)),
+        ", mean read length ", sprintf("%.0f", as.numeric(info$mean_len)),
+        " bp). SpeedDada's substitution-dominant error model and single-",
+        "indel gap correction will not track ONT data faithfully — ASVs ",
+        "produced from this run will be inaccurate. Proper ONT support ",
+        "requires banded indel-aware alignment (not yet implemented).")
+    }
+  }
+  .Call("wrap__learnErrors",
+        as.character(fls), as.double(nbases), as.character(errFun))
 }
 
 # ── 3. derepFastq ────────────────────────────────────────────────────────────

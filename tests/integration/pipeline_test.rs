@@ -78,6 +78,7 @@ fn pipeline_recovers_true_asv() {
         max_iter: 100,
         tol: 1e-6,
         seed: 42,
+        ..Default::default()
     };
     let error_model =
         learn_errors(&filtered_records, &em_cfg).unwrap_or_else(|_| ErrorModel::illumina_default());

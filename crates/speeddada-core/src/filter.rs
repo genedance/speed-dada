@@ -287,17 +287,29 @@ pub(crate) fn apply_filters_owned(
         qual.truncate(len - cfg.trim_right);
     }
 
-    // Truncate at low-quality base
+    // Truncate at the first base whose Phred score is <= trunc_q.
+    // dada2 uses <= (not <), so a default trunc_q of 2 truncates at Q2
+    // bases — important on binned platforms (NovaSeq's Q2 bin) where
+    // omitting the equality leaves error-prone bases in the read and
+    // makes the downstream error model and ASV calls diverge from dada2.
     if let Some(pos) = qual
         .iter()
-        .position(|&q| q.saturating_sub(33) < cfg.trunc_q)
+        .position(|&q| q.saturating_sub(33) <= cfg.trunc_q)
     {
         seq.truncate(pos);
         qual.truncate(pos);
     }
 
-    // Fixed-length truncation
-    if cfg.trunc_len > 0 && seq.len() > cfg.trunc_len {
+    // Fixed-length truncation. dada2 semantics: when truncLen > 0, reads
+    // shorter than truncLen are *discarded*, not just kept as-is. This
+    // matters on binned-quality platforms where the Q-truncation step
+    // above frequently shortens reads below truncLen — keeping those
+    // shortened reads diverges from dada2's read set and breaks
+    // downstream parity.
+    if cfg.trunc_len > 0 {
+        if seq.len() < cfg.trunc_len {
+            return None;
+        }
         seq.truncate(cfg.trunc_len);
         qual.truncate(cfg.trunc_len);
     }
