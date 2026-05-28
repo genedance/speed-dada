@@ -19,12 +19,13 @@ set.seed(20250528L)  # date of the speeddada parity work
   paste(sample(c("A","C","G","T"), len, replace = TRUE), collapse = "")
 }
 
+REF_LEN <- 250L  # 16S V4 amplicon size; ensures 2x150 reads overlap by ~50 bp.
 REFS <- list(
-  asv1 = .mkref(101L),
-  asv2 = .mkref(102L),
-  asv3 = .mkref(103L),
-  asv4 = .mkref(104L),
-  asv5 = .mkref(105L)
+  asv1 = .mkref(101L, REF_LEN),
+  asv2 = .mkref(102L, REF_LEN),
+  asv3 = .mkref(103L, REF_LEN),
+  asv4 = .mkref(104L, REF_LEN),
+  asv5 = .mkref(105L, REF_LEN)
 )
 ABUNDANCES <- c(50L, 40L, 30L, 20L, 10L)  # total reads per ASV
 
@@ -50,24 +51,24 @@ PLATFORMS <- list(
     notes        = "Illumina HiSeq 2500, 2x150 mode"
   ),
   novaseq = list(
-    # Illumina NovaSeq 6000 default 4-bin Q-table: 2, 12, 23, 37
+    # NovaSeq 6000 default 4-bin Q-table: 2, 12, 23, 37.
+    # Q2 ("failed") frequency is realistic ~0.5% in good data; oversampling
+    # it gets every read truncated by truncQ=2 in the filter.
     quality_bins = c(2L, 12L, 23L, 37L),
-    bin_prob     = c(0.02, 0.10, 0.20, 0.68),
+    bin_prob     = c(0.005, 0.07, 0.19, 0.735),
     read_len     = 150L,
     notes        = "Illumina NovaSeq 6000, 4-bin binned quality"
   ),
   nextseq = list(
-    # NextSeq 500/550/2000 with 8-bin Q-table
     quality_bins = c(2L, 12L, 18L, 25L, 32L, 36L, 38L, 40L),
-    bin_prob     = c(0.02, 0.04, 0.06, 0.12, 0.20, 0.26, 0.18, 0.12),
+    bin_prob     = c(0.005, 0.025, 0.05, 0.12, 0.20, 0.26, 0.22, 0.12),
     read_len     = 150L,
     notes        = "Illumina NextSeq 1000/2000, 8-bin binned quality"
   ),
   mgi = list(
-    # MGI DNBSEQ-G400 / T7 typical binned profile (12 bins)
     quality_bins = c(2L, 8L, 14L, 18L, 22L, 26L, 30L, 33L, 36L, 38L, 40L, 41L),
-    bin_prob     = c(0.02, 0.03, 0.05, 0.07, 0.09, 0.11, 0.13, 0.14,
-                     0.14, 0.12, 0.07, 0.03),
+    bin_prob     = c(0.005, 0.015, 0.04, 0.06, 0.08, 0.10, 0.12, 0.14,
+                     0.16, 0.16, 0.10, 0.03),
     read_len     = 200L,
     notes        = "MGI DNBSEQ-G400/T7, binned quality"
   ),
@@ -122,7 +123,11 @@ PLATFORMS <- list(
 # One platform → paired-end FASTQ files
 # --------------------------------------------------------------------------- #
 gen_platform <- function(name, profile, refs, abundances, out_dir) {
-  rl <- profile$read_len
+  # Cap read length at reference length so reads always fit (no padding).
+  # For paired-end overlap, ensure forward and reverse share the middle of
+  # the amplicon: fwd = ref[1:rl], rev = revcomp(ref[(L-rl+1):L]). With
+  # ref_len 250 and rl 150 → 50 bp overlap; rl 250 → 250 bp overlap.
+  rl <- min(profile$read_len, nchar(refs[[1L]]))
   total_reads <- sum(abundances)
   fwd_lines <- character(4L * total_reads)
   rev_lines <- character(4L * total_reads)
@@ -131,20 +136,9 @@ gen_platform <- function(name, profile, refs, abundances, out_dir) {
   for (asv_i in seq_along(refs)) {
     n <- abundances[asv_i]
     ref <- refs[[asv_i]]
-    # Forward read = first rl bases. Reverse read = revcomp(last rl bases).
-    fwd_template <- substr(ref, 1L, min(rl, nchar(ref)))
-    rev_template <- .revcomp(substr(ref, max(1L, nchar(ref) - rl + 1L),
-                                    nchar(ref)))
-    if (nchar(fwd_template) < rl) {
-      fwd_template <- paste0(fwd_template,
-                             paste(rep("A", rl - nchar(fwd_template)),
-                                   collapse = ""))
-    }
-    if (nchar(rev_template) < rl) {
-      rev_template <- paste0(rev_template,
-                             paste(rep("A", rl - nchar(rev_template)),
-                                   collapse = ""))
-    }
+    L <- nchar(ref)
+    fwd_template <- substr(ref, 1L, rl)
+    rev_template <- .revcomp(substr(ref, L - rl + 1L, L))
     fwd_chars0 <- strsplit(fwd_template, "", fixed = TRUE)[[1L]]
     rev_chars0 <- strsplit(rev_template, "", fixed = TRUE)[[1L]]
 

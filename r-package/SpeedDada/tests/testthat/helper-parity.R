@@ -41,25 +41,29 @@ trunc <- c(%d, %d); maxEE <- c(%g, %g)
 filt_fwd <- tempfile(fileext = ".fastq.gz")
 filt_rev <- tempfile(fileext = ".fastq.gz")
 ft <- filterAndTrim(fwd, filt_fwd, rev, filt_rev,
-                    truncLen = trunc, maxEE = maxEE,
+                    truncLen = trunc, maxEE = maxEE, minLen = 50L,
                     multithread = FALSE, verbose = FALSE)
 errF <- learnErrors(filt_fwd, nbases = 1e6, multithread = FALSE, verbose = FALSE)
 errR <- learnErrors(filt_rev, nbases = 1e6, multithread = FALSE, verbose = FALSE)
 dF <- derepFastq(filt_fwd); dR <- derepFastq(filt_rev)
-aF <- dada(dF, err = errF, multithread = FALSE, verbose = FALSE)
-aR <- dada(dR, err = errR, multithread = FALSE, verbose = FALSE)
-m <- mergePairs(aF, dF, aR, dR, verbose = FALSE)
+aF <- dada(dF, err = errF, multithread = FALSE, verbose = FALSE, OMEGA_A = 1e-10)
+aR <- dada(dR, err = errR, multithread = FALSE, verbose = FALSE, OMEGA_A = 1e-10)
+m <- mergePairs(aF, dF, aR, dR, minOverlap = 12L, verbose = FALSE)
 seqtab <- makeSequenceTable(list(s1 = m))
-seqtab_nc <- removeBimeraDenovo(seqtab, method = "consensus",
-                                multithread = FALSE, verbose = FALSE)
+seqtab_nc <- if (ncol(seqtab) >= 2L) {
+  removeBimeraDenovo(seqtab, method = "consensus",
+                     multithread = FALSE, verbose = FALSE)
+} else {
+  seqtab
+}
 res <- list(filt = ft,
             errF = errF$err_out, errR = errR$err_out,
             seqtab = seqtab, seqtab_nc = seqtab_nc)
-if (!is.null(ref)) {
+if (!is.null(ref) && ncol(seqtab_nc) > 0L) {
   res$tax <- assignTaxonomy(colnames(seqtab_nc), ref,
                             multithread = FALSE, verbose = FALSE)
 }
-if (!is.null(sp)) {
+if (!is.null(sp) && ncol(seqtab_nc) > 0L) {
   res$species <- assignSpecies(colnames(seqtab_nc), sp, verbose = FALSE)
 }
 saveRDS(res, "%s")
@@ -130,10 +134,13 @@ compare_seqtabs <- function(a, b) {
 }
 
 # Load a baked-in dada2 snapshot if it exists. Snapshots are produced once
-# (on a machine with dada2 installed) and committed so the harness can
-# report meaningful diffs even when dada2 isn't available locally.
+# (on a machine with dada2 installed) by `bake-dada2-snapshots.R` and
+# committed under fixtures-dada2/ so the harness reports meaningful diffs
+# without dada2 installed. (We can't use testthat's _snaps directory:
+# testthat auto-deletes files in there that aren't produced by
+# `expect_snapshot()`.)
 load_dada2_snapshot <- function(platform) {
-  path <- file.path(testthat::test_path("_snaps"),
+  path <- file.path(testthat::test_path("fixtures-dada2"),
                     sprintf("dada2_%s.rds", platform))
   if (!file.exists(path)) return(NULL)
   readRDS(path)

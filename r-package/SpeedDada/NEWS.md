@@ -42,7 +42,42 @@
 
 * New `SPEEDDADA_PARITY=1`-gated parity test suite compares results
   cell-by-cell against the reference Bioconductor dada2 package across
-  every supported platform fixture.
+  every supported platform fixture. dada2 reference outputs are baked
+  into `tests/testthat/fixtures-dada2/` (regenerate with
+  `inst/scripts/bake-dada2-snapshots.R` on a machine with dada2
+  installed) so the suite runs even when dada2 isn't available.
+
+### Filter bug fixes uncovered by parity tests
+
+* `filterAndTrim`: quality-score truncation now uses `<= trunc_q`
+  (matching dada2), not `< trunc_q`. Important on platforms with a Q2
+  bin (NovaSeq, NextSeq, MGI): without this fix every read kept its
+  Q2 bases and the downstream error model diverged from dada2.
+* `filterAndTrim`: reads shorter than `truncLen` are now discarded
+  (matching dada2 semantics). Previously they fell through to the
+  `minLen` check, which let in many error-prone short reads that
+  dada2 had filtered out.
+
+### Known parity gaps
+
+After the filter fixes above, **read counts after `filterAndTrim` now
+agree exactly with dada2 on every supported platform**. ASV-level
+agreement against dada2 1.38.0 on the synthetic fixtures:
+
+| Platform           | ASV-set Jaccard | Notes                              |
+|--------------------|----------------|-------------------------------------|
+| PacBio CCS         | 1.00 (exact)    | Canned PacBio matrix matches dada2 |
+| Illumina MiSeq     | 0.83            | One extra spurious singleton ASV   |
+| Illumina HiSeq     | 0.83            | Same as MiSeq                      |
+| Illumina NextSeq   | 0.50            | Binned-quality smoother divergence |
+| Illumina NovaSeq   | 0.11            | Binned-quality smoother divergence |
+| MGI DNBSEQ         | 0.07            | Binned-quality smoother divergence |
+
+Closing the binned-quality gap (matching dada2's `makeBinnedQualErrfun`
+cell-by-cell) is the next algorithmic milestone — the current
+piecewise-linear smoother is in the right shape but produces a
+sufficiently different error matrix that downstream partition decisions
+in `dada()` diverge.
 
 ## SpeedDada 0.99.1
 
