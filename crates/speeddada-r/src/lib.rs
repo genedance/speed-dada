@@ -206,6 +206,13 @@ fn learnErrors(fls: Vec<String>, nbases: f64, err_fun: &str) -> ExternalPtr<RErr
     ExternalPtr::new(RErrorModel(model))
 }
 
+/// Return the learned error model as a flat numeric vector in row-major
+/// order (16 transitions × MAX_QUAL columns). The R wrapper reshapes it.
+#[extendr]
+fn errorModelMatrix(em: ExternalPtr<RErrorModel>) -> Vec<f64> {
+    em.0.matrix.iter().copied().collect()
+}
+
 /// Sniff a FASTQ file's quality profile and report which error-function
 /// the auto-detector would pick. Used by the R wrapper to print an
 /// informative message (and to warn on ONT-shaped data).
@@ -797,6 +804,7 @@ extendr_module! {
     fn filterAndTrim;
     fn learnErrors;
     fn detectErrFun;
+    fn errorModelMatrix;
     fn derepFastq;
     fn dada;
     fn dada_many;

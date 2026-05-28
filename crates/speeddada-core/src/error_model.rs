@@ -451,40 +451,56 @@ fn add_pairwise_mismatch_counts(
         by_len.entry(len).or_default().push((seq, u));
     }
 
-    for (_, mut bucket) in by_len {
-        // Sort by descending count so bucket[0] is the local "parent".
-        bucket.sort_unstable_by(|a, b| b.1.count.cmp(&a.1.count));
-        let (parent_seq, parent_uniq) = bucket[0].clone();
+    for (_, bucket) in by_len {
         if bucket.len() < 2 {
             continue;
         }
-        for (child_seq, child_uniq) in bucket.iter().skip(1) {
-            let dist = crate::align::hamming_distance(&parent_seq, child_seq);
-            if dist == 0 || dist > max_dist {
-                continue;
-            }
-            #[allow(clippy::cast_precision_loss)]
-            let weight = child_uniq.count.min(parent_uniq.count) as f64;
-            for (i, (&pb, &cb)) in parent_seq.iter().zip(child_seq.iter()).enumerate() {
-                if pb == cb {
+        // Sort by descending count so the higher-count member is treated
+        // as the "parent" within each pair.
+        let mut sorted = bucket;
+        sorted.sort_unstable_by(|a, b| b.1.count.cmp(&a.1.count));
+
+        // Consider EVERY pair within the bucket (not just parent vs others).
+        // On noisy binned-quality fixtures every read tends to be a unique
+        // singleton, so the parent-vs-others heuristic only finds ~n
+        // pairs; expanding to ~n²/2 pairs (still O(n²) but n is at most
+        // the per-bucket unique-sequence count) gives the smoother enough
+        // mismatch evidence at every (transition, q) bin to populate the
+        // matrix without leaving high-Q cells at the rate floor.
+        for i in 0..sorted.len() {
+            let (p_seq, p_uniq) = &sorted[i];
+            for j in (i + 1)..sorted.len() {
+                let (c_seq, c_uniq) = &sorted[j];
+                let dist = crate::align::hamming_distance(p_seq, c_seq);
+                if dist == 0 || dist > max_dist {
                     continue;
                 }
-                let pbi = base_index(pb) as usize;
-                let cbi = base_index(cb) as usize;
-                // Use the child's mean quality at this position as the
-                // representative q for the (parent→child) mismatch.
-                #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-                let mean_q = (child_uniq.qual_sum[i] as f64 / child_uniq.count as f64) as usize;
-                let col = mean_q.min(MAX_QUAL - 1);
-                let row = pbi * 4 + cbi;
-                counts[[row, col]] += weight;
-                // Also REMOVE the match miscount we made in
-                // collect_match_counts (the child's base was counted as a
-                // self-transition; here we re-attribute `weight` of it to a
-                // mismatch). Don't go below zero.
-                let self_row = cbi * 4 + cbi;
-                let prev = counts[[self_row, col]];
-                counts[[self_row, col]] = (prev - weight).max(0.0);
+                #[allow(clippy::cast_precision_loss)]
+                let weight = c_uniq.count.min(p_uniq.count) as f64;
+                for (k, (&pb, &cb)) in p_seq.iter().zip(c_seq.iter()).enumerate() {
+                    if pb == cb {
+                        continue;
+                    }
+                    let pbi = base_index(pb) as usize;
+                    let cbi = base_index(cb) as usize;
+                    // Use the child's mean quality at this position as the
+                    // representative q for the (parent→child) mismatch.
+                    #[allow(
+                        clippy::cast_precision_loss,
+                        clippy::cast_possible_truncation
+                    )]
+                    let mean_q =
+                        (c_uniq.qual_sum[k] as f64 / c_uniq.count as f64) as usize;
+                    let col = mean_q.min(MAX_QUAL - 1);
+                    let row = pbi * 4 + cbi;
+                    counts[[row, col]] += weight;
+                    // Re-attribute `weight` from the (child_base, q)
+                    // self-transition to the (parent_base→child_base, q)
+                    // mismatch. Don't drop below zero.
+                    let self_row = cbi * 4 + cbi;
+                    let prev = counts[[self_row, col]];
+                    counts[[self_row, col]] = (prev - weight).max(0.0);
+                }
             }
         }
     }
@@ -593,45 +609,79 @@ fn fit_from_counts(
             // a handful of distinct quality points. Use piecewise linear
             // interpolation between observed bin centres instead — mirrors
             // `dada2::makeBinnedQualErrfun`.
-            for tb in 0..4 {
-                let mut col_total = [0.0_f64; MAX_QUAL];
-                for ob in 0..4 {
-                    let r = tb * 4 + ob;
-                    for col in 0..MAX_QUAL {
-                        col_total[col] += counts[[r, col]];
+            //
+            // Sparse-data robustness: dada2 fits a separate rate for each
+            // of the 12 non-self transition directions. With small sample
+            // sizes and a heuristic mismatch-evidence collector (our
+            // selfConsist-lite vs dada2's full selfConsist), per-direction
+            // rates become noisy and individual cells go to zero — which
+            // makes dada() over-split because it concludes high-Q errors
+            // are impossible. We pool evidence across the 12 non-self
+            // directions per Q (uniform-substitution assumption) and then
+            // apply that pooled rate per direction. Robust on sparse
+            // fixtures; gives up a small amount of per-direction bias.
+            //
+            // dada2 caps mismatch rates in `[MIN_ERROR_RATE, MAX_ERROR_RATE]`
+            // = `[1e-7, 0.25]`. We mirror that.
+            const MIN_ERR: f64 = 1e-7;
+            const MAX_ERR: f64 = 0.25;
+
+            // Identify observed bin centres globally (cols with any data).
+            let mut total_per_col = [0.0_f64; MAX_QUAL];
+            for r in 0..N_TRANSITIONS {
+                for col in 0..MAX_QUAL {
+                    total_per_col[col] += counts[[r, col]];
+                }
+            }
+            let bins: Vec<usize> = (0..MAX_QUAL)
+                .filter(|&c| total_per_col[c] > 0.0)
+                .collect();
+
+            // Pooled mismatch rate per Q: sum of all off-diagonal counts /
+            // sum of all counts (match + mismatch) — pooled across 12
+            // non-self directions, then divided by 3 to get the per-
+            // direction rate (assumes uniform substitution).
+            let mut bin_mismatch = vec![0.0_f64; bins.len()];
+            for (i, &c) in bins.iter().enumerate() {
+                let mut off_diag = 0.0_f64;
+                let mut on_diag = 0.0_f64;
+                for r in 0..N_TRANSITIONS {
+                    if r % 5 == 0 {
+                        on_diag += counts[[r, c]];
+                    } else {
+                        off_diag += counts[[r, c]];
                     }
                 }
-                // Identify the observed bin centres (cols with any data).
-                let bins: Vec<usize> = (0..MAX_QUAL)
-                    .filter(|&c| col_total[c] > 0.0)
-                    .collect();
+                let total = on_diag + off_diag;
+                if total > 0.0 {
+                    // Per-direction mismatch rate (12 off-diagonal cells).
+                    let pooled = off_diag / total;
+                    bin_mismatch[i] = (pooled / 3.0).clamp(MIN_ERR, MAX_ERR);
+                }
+            }
+
+            // Apply per-direction: mismatch entries get the pooled rate,
+            // match entries get 1 - 3 × pooled.
+            for tb in 0..4 {
                 for ob in 0..4 {
                     let r = tb * 4 + ob;
                     let is_match = tb == ob;
-                    // Per-bin empirical rate.
-                    let mut bin_rate = vec![0.0_f64; bins.len()];
-                    for (i, &c) in bins.iter().enumerate() {
-                        bin_rate[i] = counts[[r, c]] / col_total[c];
-                    }
                     for col in 0..MAX_QUAL {
-                        let p = piecewise_linear(&bins, &bin_rate, col, is_match);
-                        matrix[[r, col]] = p.clamp(1e-12, 1.0);
+                        let p_mismatch = piecewise_linear_floor(
+                            &bins, &bin_mismatch, col, MIN_ERR, MAX_ERR,
+                        );
+                        matrix[[r, col]] = if is_match {
+                            (1.0 - 3.0 * p_mismatch).max(1.0 - 3.0 * MAX_ERR)
+                        } else {
+                            p_mismatch
+                        };
                     }
                     if is_match {
-                        // Same monotonicity guard as the LOESS branch.
+                        // Monotonicity guard.
                         for col in (1..MAX_QUAL).rev() {
                             if matrix[[r, col - 1]] < matrix[[r, col]] {
                                 matrix[[r, col - 1]] = matrix[[r, col]];
                             }
-                        }
-                    }
-                }
-                // Renormalise per column.
-                for col in 0..MAX_QUAL {
-                    let s: f64 = (0..4).map(|ob| matrix[[tb * 4 + ob, col]]).sum();
-                    if s > 0.0 {
-                        for ob in 0..4 {
-                            matrix[[tb * 4 + ob, col]] /= s;
                         }
                     }
                 }
@@ -678,6 +728,44 @@ fn pacbio_matrix() -> Array2<f64> {
         }
     }
     m
+}
+
+/// Piecewise-linear interpolation of `bin_rate[i]` at observed `bins[i]`,
+/// clamped to `[lo, hi]`. Nearest-bin extension outside the observed range
+/// (matches `dada2::makeBinnedQualErrfun`).
+fn piecewise_linear_floor(
+    bins: &[usize],
+    bin_rate: &[f64],
+    q: usize,
+    lo: f64,
+    hi: f64,
+) -> f64 {
+    if bins.is_empty() {
+        // No data at all — fall back to the Illumina prior for mismatch
+        // (cells get the Phred-based estimate at this q).
+        #[allow(clippy::cast_precision_loss)]
+        let p_err = 10f64.powf(-(q as f64) / 10.0);
+        return (p_err / 3.0).clamp(lo, hi);
+    }
+    if bins.len() == 1 {
+        return bin_rate[0].clamp(lo, hi);
+    }
+    if q <= bins[0] {
+        return bin_rate[0].clamp(lo, hi);
+    }
+    if q >= *bins.last().unwrap() {
+        return bin_rate.last().unwrap().clamp(lo, hi);
+    }
+    for i in 0..bins.len() - 1 {
+        let blo = bins[i];
+        let bhi = bins[i + 1];
+        if q >= blo && q <= bhi {
+            #[allow(clippy::cast_precision_loss)]
+            let t = (q - blo) as f64 / (bhi - blo).max(1) as f64;
+            return (bin_rate[i] + t * (bin_rate[i + 1] - bin_rate[i])).clamp(lo, hi);
+        }
+    }
+    bin_rate.last().unwrap().clamp(lo, hi)
 }
 
 /// Piecewise-linear interpolation of `bin_rate[i]` at observed `bins[i]`,

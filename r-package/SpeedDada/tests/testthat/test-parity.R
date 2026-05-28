@@ -29,27 +29,24 @@ PARITY_PARAMS <- list(
   pacbio_ccs = list(trunc = c(150L, 150L), maxEE = c(5, 5))
 )
 
-# Acceptance thresholds per platform — currently calibrated to the
-# *observed* parity floor against dada2 1.38.0 on the synthetic fixtures.
-# These guard against regressions; raising them is the goal of follow-up
-# error-model work (see NEWS.md "Known parity gaps").
+# Acceptance thresholds per platform — calibrated to current observed
+# parity against dada2 1.38.0 on the synthetic fixtures. Guards against
+# regression; expects ASV-set equality on every platform where we have it.
 #
-# Honest current state (May 2026):
-#   - PacBio CCS: exact ASV-set match (jaccard = 1.00).
-#   - Filter parity: exact read counts on every platform.
-#   - MiSeq / HiSeq: ~83 % ASV-set agreement; SpeedDada emits one extra
-#     spurious singleton ASV that dada2 collapses.
-#   - NovaSeq / NextSeq / MGI: 0.05–0.50 ASV-set agreement. SpeedDada's
-#     Binned smoother diverges from dada2::makeBinnedQualErrfun enough to
-#     change downstream partition decisions. Matching cell-by-cell is the
-#     next algorithmic milestone.
+# Current state (after pooled-mismatch + all-pairs error-evidence work):
+#   - PacBio CCS, MiSeq, HiSeq, NovaSeq, NextSeq: exact ASV-set match
+#     (Jaccard = 1.00).
+#   - MGI DNBSEQ: 0.50 — SpeedDada returns 4 ASVs, dada2 returns 2 (out
+#     of 5 underlying truth ASVs). dada2 over-clusters on the MGI
+#     fixture; SpeedDada is actually closer to truth there. We hold the
+#     bar at 0.50 (no regression) rather than chase dada2's behaviour.
 PARITY_THRESHOLDS <- list(
-  miseq      = list(asv_jaccard = 0.80, abundance = 5L),
-  hiseq      = list(asv_jaccard = 0.80, abundance = 5L),
-  novaseq    = list(asv_jaccard = 0.05, abundance = 20L),
-  nextseq    = list(asv_jaccard = 0.30, abundance = 20L),
-  mgi        = list(asv_jaccard = 0.05, abundance = 20L),
-  pacbio_ccs = list(asv_jaccard = 0.95, abundance = 5L)
+  miseq      = list(asv_jaccard = 0.95, abundance = 2L),
+  hiseq      = list(asv_jaccard = 0.95, abundance = 2L),
+  novaseq    = list(asv_jaccard = 0.95, abundance = 5L),
+  nextseq    = list(asv_jaccard = 0.95, abundance = 5L),
+  mgi        = list(asv_jaccard = 0.50, abundance = 10L),
+  pacbio_ccs = list(asv_jaccard = 0.95, abundance = 2L)
 )
 
 run_speeddada_pipeline <- function(fwd, rev, params, ref = NULL, species = NULL) {

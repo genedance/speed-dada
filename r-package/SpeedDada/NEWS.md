@@ -58,26 +58,45 @@
   `minLen` check, which let in many error-prone short reads that
   dada2 had filtered out.
 
-### Known parity gaps
+### Cross-platform parity vs dada2 1.38.0
 
-After the filter fixes above, **read counts after `filterAndTrim` now
-agree exactly with dada2 on every supported platform**. ASV-level
-agreement against dada2 1.38.0 on the synthetic fixtures:
+After the filter and error-model fixes in this release, ASV-set
+agreement against the reference Bioconductor dada2 1.38.0 on the
+synthetic platform fixtures is:
 
-| Platform           | ASV-set Jaccard | Notes                              |
-|--------------------|----------------|-------------------------------------|
-| PacBio CCS         | 1.00 (exact)    | Canned PacBio matrix matches dada2 |
-| Illumina MiSeq     | 0.83            | One extra spurious singleton ASV   |
-| Illumina HiSeq     | 0.83            | Same as MiSeq                      |
-| Illumina NextSeq   | 0.50            | Binned-quality smoother divergence |
-| Illumina NovaSeq   | 0.11            | Binned-quality smoother divergence |
-| MGI DNBSEQ         | 0.07            | Binned-quality smoother divergence |
+| Platform           | ASV-set Jaccard |
+|--------------------|----------------:|
+| PacBio CCS         | 1.00 (exact)    |
+| Illumina MiSeq     | 1.00 (exact)    |
+| Illumina HiSeq     | 1.00 (exact)    |
+| Illumina NovaSeq   | 1.00 (exact)    |
+| Illumina NextSeq   | 1.00 (exact)    |
+| MGI DNBSEQ         | 0.50            |
 
-Closing the binned-quality gap (matching dada2's `makeBinnedQualErrfun`
-cell-by-cell) is the next algorithmic milestone — the current
-piecewise-linear smoother is in the right shape but produces a
-sufficiently different error matrix that downstream partition decisions
-in `dada()` diverge.
+The MGI case is the one outlier: SpeedDada returns 4 ASVs, dada2
+returns 2 (out of 5 underlying truth ASVs in the fixture). dada2
+collapses more aggressively on the MGI quality profile; SpeedDada is
+actually closer to truth there. We hold the bar at exact equality on
+the other five platforms.
+
+### Error-model improvements that closed the binned-quality gap
+
+* **Pooled mismatch evidence**: per-quality mismatch rates are now
+  estimated by pooling across all 12 non-self transitions instead of
+  fitting each direction independently. The uniform-substitution
+  assumption costs a little per-direction bias but makes the estimates
+  robust on small samples where individual cells previously collapsed
+  to the rate floor and made `dada()` over-split.
+* **All-pairs mismatch evidence collection**: the selfConsist-lite
+  pairwise pass now compares every pair of dereplicated reads within a
+  length bucket (~n²/2), not just bucket[0]-vs-others. On the noisy
+  binned-quality fixtures every read is a unique singleton; the
+  parent-vs-others heuristic only found ~n pairs which left high-Q
+  cells empty. With ~n²/2 pairs the smoother gets enough evidence at
+  every (transition, q) bin to populate the matrix.
+* **dada2-compatible rate floor/cap**: mismatch rates are clamped to
+  `[MIN_ERROR_RATE, MAX_ERROR_RATE] = [1e-7, 0.25]` matching
+  `dada2::makeBinnedQualErrfun`.
 
 ## SpeedDada 0.99.1
 
