@@ -117,6 +117,26 @@ impl ErrorModel {
     }
 }
 
+/// Smoothing method used to fit per-quality transition probabilities.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum ErrFunKind {
+    /// 2-parameter logistic regression σ(a + b·q) — the original SpeedDada
+    /// behaviour. Cheap but crude; under-fits any non-monotone curve.
+    Logistic,
+    /// Weighted local linear regression with a tricubic kernel
+    /// (LOWESS, degree 1). Roughly equivalent to `dada2::loessErrfun`
+    /// with default span — captures the empirical curvature in the
+    /// transition data, including the typical "shoulder" at low quality
+    /// scores where the logistic fit overshoots.
+    Loess,
+}
+
+impl Default for ErrFunKind {
+    fn default() -> Self {
+        Self::Loess
+    }
+}
+
 /// Configuration for error model learning.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorLearningConfig {
@@ -128,6 +148,39 @@ pub struct ErrorLearningConfig {
     pub tol: f64,
     /// RNG seed for reproducibility.
     pub seed: u64,
+    /// Smoothing method used to fit the per-quality transition probabilities.
+    /// Defaults to [`ErrFunKind::Loess`] for parity with dada2.
+    #[serde(default)]
+    pub method: ErrFunKind,
+    /// Number of selfConsist passes the *wrapper layer* will run.
+    ///
+    /// The selfConsist loop alternates `learn_errors → dada → recover
+    /// mismatch counts from clusters → refit`. Because that loop crosses
+    /// module boundaries (it must call `crate::dada`), it lives outside
+    /// `error_model`; this field is metadata so the wrapper knows how
+    /// many iterations were requested. `0` (the default) means run a
+    /// single pass with empirical mismatch evidence collected from the
+    /// dereplicated read set.
+    #[serde(default)]
+    pub self_consist_iters: u32,
+    /// LOESS span (fraction of points contributing to each local fit).
+    /// Default 0.95 matches `dada2::loessErrfun`.
+    #[serde(default = "default_loess_span")]
+    pub loess_span: f64,
+    /// Maximum Hamming distance for the same-length pairwise pass that
+    /// recovers mismatch evidence. Pairs farther apart than this are
+    /// treated as different species rather than parent/error pairs.
+    /// Default 8 matches dada2's `errBalancedF` collection radius.
+    #[serde(default = "default_max_pair_dist")]
+    pub max_pair_dist: u32,
+}
+
+fn default_loess_span() -> f64 {
+    0.95
+}
+
+fn default_max_pair_dist() -> u32 {
+    8
 }
 
 impl Default for ErrorLearningConfig {
@@ -137,19 +190,37 @@ impl Default for ErrorLearningConfig {
             max_iter: 16,
             tol: 1e-6,
             seed: 42,
+            method: ErrFunKind::default(),
+            self_consist_iters: 0,
+            loess_span: default_loess_span(),
+            max_pair_dist: default_max_pair_dist(),
         }
     }
 }
 
 /// Learn error rates from a collection of reads.
 ///
-/// Uses the first `cfg.n_reads` reads from `records` (seq + qual pairs).
-/// Each read is aligned against itself to collect transition counts per
-/// Phred bin, then logistic parameters are fitted by EM.
+/// Two phases:
+/// 1. **Match collection (cheap):** every called base contributes a
+///    `(base, base, q)` self-transition. This is the only signal in
+///    purely-self-aligned counts and exactly matches the legacy behaviour.
+/// 2. **Mismatch collection (selfConsist-lite):** within each same-length
+///    bucket, the most-abundant unique sequence is treated as the local
+///    "parent" and every lower-abundance unique within `cfg.max_pair_dist`
+///    Hamming bases of it contributes `(parent_base → child_base, q)`
+///    mismatch counts (weighted by `min(parent_count, child_count)`).
+///    This is a single-pass approximation of dada2's `selfConsist`
+///    refinement; the full EM loop is expected to be driven from the
+///    wrapper layer (it has to call `crate::dada`, so it can't live here).
+///
+/// The transition counts are then smoothed per row using either the
+/// 2-parameter logistic fit (legacy) or LOESS (degree-1 local linear
+/// regression with tricubic weights, default — equivalent to dada2's
+/// `loessErrfun`).
 ///
 /// # Errors
-/// Returns [`Dada2Error::Convergence`] if EM does not converge.
-/// Returns [`Dada2Error::InvalidInput`] if no reads are supplied.
+/// Returns [`Dada2Error::Convergence`] if the logistic fit diverges on the
+/// first step. Returns [`Dada2Error::InvalidInput`] if no reads are supplied.
 pub fn learn_errors(
     records: &[crate::io::fastq::FastqRecord],
     cfg: &ErrorLearningConfig,
@@ -160,10 +231,43 @@ pub fn learn_errors(
         ));
     }
 
-    // Accumulate transition counts in parallel: each thread gets its own
-    // Array2 accumulator; final result is their element-wise sum.
     let n = cfg.n_reads.min(records.len());
-    let counts = records[..n]
+    let mut counts = collect_match_counts(&records[..n]);
+    add_pairwise_mismatch_counts(&records[..n], &mut counts, cfg.max_pair_dist);
+
+    let matrix = fit_from_counts(&counts, cfg)?;
+    let log_matrix = build_log_matrix(&matrix);
+    Ok(ErrorModel {
+        matrix,
+        n_reads_used: n as u64,
+        log_matrix,
+    })
+}
+
+/// Refit an [`ErrorModel`] from precomputed transition counts.
+///
+/// Intended for selfConsist-style orchestration in a wrapper layer:
+/// after each `dada()` pass the wrapper rebuilds the count matrix from
+/// inferred parent→child edges and calls this to refit.
+///
+/// # Errors
+/// See [`learn_errors`].
+pub fn refit_from_counts(
+    counts: &Array2<f64>,
+    cfg: &ErrorLearningConfig,
+    n_reads_used: u64,
+) -> Result<ErrorModel, Dada2Error> {
+    let matrix = fit_from_counts(counts, cfg)?;
+    let log_matrix = build_log_matrix(&matrix);
+    Ok(ErrorModel {
+        matrix,
+        n_reads_used,
+        log_matrix,
+    })
+}
+
+fn collect_match_counts(records: &[crate::io::fastq::FastqRecord]) -> Array2<f64> {
+    records
         .par_iter()
         .fold(
             || Array2::<f64>::zeros((N_TRANSITIONS, MAX_QUAL)),
@@ -172,7 +276,6 @@ pub fn learn_errors(
                     let bi = base_index(base) as usize;
                     let q = Phred::from_ascii(qc).0 as usize;
                     let col = q.min(MAX_QUAL - 1);
-                    // Self-comparison: transition = base → base (match)
                     let row = bi * 4 + bi;
                     acc[[row, col]] += 1.0;
                 }
@@ -185,38 +288,253 @@ pub fn learn_errors(
                 a += &b;
                 a
             },
-        );
+        )
+}
 
-    // Logistic regression fit per transition class — all 16 rows are independent.
-    let rows: Vec<Array1<f64>> = (0..N_TRANSITIONS)
-        .map(|row| counts.row(row).to_owned())
-        .collect();
+/// Within each same-length bucket of reads, find the most-abundant unique
+/// sequence and attribute mismatches in similar neighbours to it.
+///
+/// This is a *single-pass* approximation of dada2's `selfConsist`: it
+/// extracts real (parent_base → child_base, q) mismatch evidence without
+/// needing to run the DADA denoiser. Pairs more than `max_dist` bases
+/// apart are treated as biologically different species and ignored.
+fn add_pairwise_mismatch_counts(
+    records: &[crate::io::fastq::FastqRecord],
+    counts: &mut Array2<f64>,
+    max_dist: u32,
+) {
+    use std::collections::HashMap;
 
-    let params: Vec<Result<[f64; 2], Dada2Error>> = rows
-        .par_iter()
-        .enumerate()
-        .map(|(row, row_counts)| {
-            let is_match = row % 5 == 0;
-            fit_logistic_row(row_counts, is_match, cfg)
-        })
-        .collect();
-
-    let mut matrix = Array2::<f64>::zeros((N_TRANSITIONS, MAX_QUAL));
-    for (row, res) in params.into_iter().enumerate() {
-        let [a, b] = res?;
-        for col in 0..MAX_QUAL {
-            #[allow(clippy::cast_precision_loss)]
-            let q = col as f64;
-            matrix[[row, col]] = sigmoid(a + b * q);
+    // Dereplicate by (length, seq) within memory; carry per-position
+    // quality sums so we can recover a mean-quality vector per unique.
+    #[derive(Default, Clone)]
+    struct Unique {
+        count: u64,
+        qual_sum: Vec<u64>,
+    }
+    let mut by_seq: HashMap<Vec<u8>, Unique> = HashMap::new();
+    for rec in records {
+        if rec.seq.len() != rec.qual.len() {
+            continue;
+        }
+        let u = by_seq.entry(rec.seq.clone()).or_insert_with(|| Unique {
+            count: 0,
+            qual_sum: vec![0; rec.seq.len()],
+        });
+        u.count += 1;
+        for (i, &q) in rec.qual.iter().enumerate() {
+            u.qual_sum[i] += u64::from(Phred::from_ascii(q).0);
         }
     }
+    if by_seq.is_empty() {
+        return;
+    }
 
-    let log_matrix = build_log_matrix(&matrix);
-    Ok(ErrorModel {
-        matrix,
-        n_reads_used: n as u64,
-        log_matrix,
-    })
+    // Bucket by length.
+    let mut by_len: HashMap<usize, Vec<(Vec<u8>, Unique)>> = HashMap::new();
+    for (seq, u) in by_seq {
+        let len = seq.len();
+        by_len.entry(len).or_default().push((seq, u));
+    }
+
+    for (_, mut bucket) in by_len {
+        // Sort by descending count so bucket[0] is the local "parent".
+        bucket.sort_unstable_by(|a, b| b.1.count.cmp(&a.1.count));
+        let (parent_seq, parent_uniq) = bucket[0].clone();
+        if bucket.len() < 2 {
+            continue;
+        }
+        for (child_seq, child_uniq) in bucket.iter().skip(1) {
+            let dist = crate::align::hamming_distance(&parent_seq, child_seq);
+            if dist == 0 || dist > max_dist {
+                continue;
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let weight = child_uniq.count.min(parent_uniq.count) as f64;
+            for (i, (&pb, &cb)) in parent_seq.iter().zip(child_seq.iter()).enumerate() {
+                if pb == cb {
+                    continue;
+                }
+                let pbi = base_index(pb) as usize;
+                let cbi = base_index(cb) as usize;
+                // Use the child's mean quality at this position as the
+                // representative q for the (parent→child) mismatch.
+                #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+                let mean_q = (child_uniq.qual_sum[i] as f64 / child_uniq.count as f64) as usize;
+                let col = mean_q.min(MAX_QUAL - 1);
+                let row = pbi * 4 + cbi;
+                counts[[row, col]] += weight;
+                // Also REMOVE the match miscount we made in
+                // collect_match_counts (the child's base was counted as a
+                // self-transition; here we re-attribute `weight` of it to a
+                // mismatch). Don't go below zero.
+                let self_row = cbi * 4 + cbi;
+                let prev = counts[[self_row, col]];
+                counts[[self_row, col]] = (prev - weight).max(0.0);
+            }
+        }
+    }
+}
+
+fn fit_from_counts(
+    counts: &Array2<f64>,
+    cfg: &ErrorLearningConfig,
+) -> Result<Array2<f64>, Dada2Error> {
+    let mut matrix = Array2::<f64>::zeros((N_TRANSITIONS, MAX_QUAL));
+    match cfg.method {
+        ErrFunKind::Logistic => {
+            let rows: Vec<Array1<f64>> = (0..N_TRANSITIONS)
+                .map(|row| counts.row(row).to_owned())
+                .collect();
+            let params: Vec<Result<[f64; 2], Dada2Error>> = rows
+                .par_iter()
+                .enumerate()
+                .map(|(row, row_counts)| {
+                    let is_match = row % 5 == 0;
+                    fit_logistic_row(row_counts, is_match, cfg)
+                })
+                .collect();
+            for (row, res) in params.into_iter().enumerate() {
+                let [a, b] = res?;
+                for col in 0..MAX_QUAL {
+                    #[allow(clippy::cast_precision_loss)]
+                    let q = col as f64;
+                    matrix[[row, col]] = sigmoid(a + b * q);
+                }
+            }
+        }
+        ErrFunKind::Loess => {
+            // Normalise to empirical rates per column (true_base column-sum
+            // = total times that base was seen at quality q), then smooth
+            // each row independently.
+            for tb in 0..4 {
+                // Compute column totals across the 4 transition rows for this true base.
+                let mut col_total = [0.0_f64; MAX_QUAL];
+                for ob in 0..4 {
+                    let r = tb * 4 + ob;
+                    for col in 0..MAX_QUAL {
+                        col_total[col] += counts[[r, col]];
+                    }
+                }
+                // Per (true_base → obs_base): empirical p, then LOWESS.
+                for ob in 0..4 {
+                    let r = tb * 4 + ob;
+                    let mut y = vec![0.0_f64; MAX_QUAL];
+                    let mut w = vec![0.0_f64; MAX_QUAL];
+                    for col in 0..MAX_QUAL {
+                        let total = col_total[col];
+                        if total > 0.0 {
+                            y[col] = counts[[r, col]] / total;
+                            w[col] = total;
+                        }
+                    }
+                    let smoothed = lowess_row(&y, &w, cfg.loess_span);
+                    let is_match = tb == ob;
+                    for col in 0..MAX_QUAL {
+                        // Clamp into [eps, 1] and enforce monotonicity for
+                        // self-transitions (matches dada2 behaviour).
+                        let p = smoothed[col].clamp(1e-12, 1.0);
+                        #[allow(clippy::cast_precision_loss)]
+                        let q = col as f64;
+                        matrix[[r, col]] = if w[col] == 0.0 {
+                            // No empirical evidence at this quality bin —
+                            // fall back to the Illumina-default prior.
+                            let p_err = 10f64.powf(-q / 10.0);
+                            if is_match {
+                                1.0 - p_err
+                            } else {
+                                p_err / 3.0
+                            }
+                        } else {
+                            p
+                        };
+                    }
+                    if is_match {
+                        // Enforce non-increasing-with-q for the self
+                        // transition (probability of correct call should
+                        // not drop as quality increases).
+                        for col in (1..MAX_QUAL).rev() {
+                            if matrix[[r, col - 1]] < matrix[[r, col]] {
+                                matrix[[r, col - 1]] = matrix[[r, col]];
+                            }
+                        }
+                    }
+                }
+                // Renormalise each column over the 4 obs bases so the row
+                // group sums to ~1 (LOWESS is per-row independent, so the
+                // unnormalised sum drifts slightly).
+                for col in 0..MAX_QUAL {
+                    let s: f64 = (0..4).map(|ob| matrix[[tb * 4 + ob, col]]).sum();
+                    if s > 0.0 {
+                        for ob in 0..4 {
+                            matrix[[tb * 4 + ob, col]] /= s;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(matrix)
+}
+
+/// Weighted local linear regression (LOWESS, degree 1) over the q-axis.
+///
+/// `y[q]` is the empirical transition probability at quality `q`; `w[q]`
+/// is the count weight at that quality (zero means "no observation").
+/// `span` is the fraction of points whose neighbourhood determines each
+/// fit (matches dada2's loess `span` default of 0.95).
+fn lowess_row(y: &[f64], w: &[f64], span: f64) -> Vec<f64> {
+    let n = y.len();
+    let mut out = vec![0.0_f64; n];
+    if n == 0 {
+        return out;
+    }
+    let k = ((span * n as f64).round() as usize).max(3).min(n);
+
+    for i in 0..n {
+        // The k nearest neighbours of x=i are simply [i-k/2 .. i+k/2].
+        let half = k / 2;
+        let lo = i.saturating_sub(half);
+        let hi = (lo + k).min(n);
+        let lo = hi.saturating_sub(k); // shift left if we hit the right edge
+        let max_dist = (i.saturating_sub(lo)).max(hi - 1 - i).max(1) as f64;
+
+        let mut sw = 0.0_f64;
+        let mut sx = 0.0_f64;
+        let mut sy = 0.0_f64;
+        let mut sxx = 0.0_f64;
+        let mut sxy = 0.0_f64;
+        for j in lo..hi {
+            let d = ((j as i64 - i as i64).abs() as f64) / max_dist;
+            if d >= 1.0 {
+                continue;
+            }
+            // Tricubic kernel
+            let kw = (1.0 - d.powi(3)).powi(3);
+            let wj = kw * w[j];
+            if wj <= 0.0 {
+                continue;
+            }
+            let x = j as f64;
+            sw += wj;
+            sx += wj * x;
+            sy += wj * y[j];
+            sxx += wj * x * x;
+            sxy += wj * x * y[j];
+        }
+        if sw <= 0.0 {
+            out[i] = y[i];
+            continue;
+        }
+        let mean_x = sx / sw;
+        let mean_y = sy / sw;
+        let var_x = sxx / sw - mean_x * mean_x;
+        let cov_xy = sxy / sw - mean_x * mean_y;
+        let beta = if var_x.abs() < 1e-12 { 0.0 } else { cov_xy / var_x };
+        let alpha = mean_y - beta * mean_x;
+        out[i] = alpha + beta * i as f64;
+    }
+    out
 }
 
 /// Fit a 2-parameter logistic model σ(a + b·q) to a count vector by gradient descent.

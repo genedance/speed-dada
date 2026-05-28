@@ -17,8 +17,12 @@ use speeddada_core::{
     derep::{derep_fastq, UniqueSeq},
     error_model::{learn_errors, ErrorLearningConfig, ErrorModel},
     filter::{filter_and_trim_many, filter_and_trim_paired_many, FilterConfig},
-    io::fastq::read_fastq,
-    merge::{merge_pairs, MergeConfig},
+    io::{fasta::read_fasta, fastq::read_fastq},
+    merge::{merge_pairs, reverse_complement, MergeConfig},
+    primer::{trim_primers, PrimerConfig},
+    quality_profile::quality_profile,
+    species::{assign_species, SpeciesConfig},
+    taxonomy::{lineage_map_from_fasta, load_lineage_tsv, TaxonomyConfig, TaxonomyDb},
 };
 use std::path::{Path, PathBuf};
 
@@ -51,6 +55,18 @@ unsafe impl Send for RDereped {}
 
 #[extendr]
 impl RDereped {}
+
+// ── TaxonomyDb external pointer ───────────────────────────────────────────────
+
+/// Opaque wrapper so a built [`TaxonomyDb`] (bitset k-mer profiles + lineage
+/// map) can live in an R `externalptr` across many `assignTaxonomy` calls.
+pub struct RTaxonomyDb(pub TaxonomyDb);
+
+#[allow(unsafe_code)]
+unsafe impl Send for RTaxonomyDb {}
+
+#[extendr]
+impl RTaxonomyDb {}
 
 /// Reconstruct [`Asv`] vec from parallel `seqs` / `counts` vectors.
 fn asvs_from_r(seqs: &[String], counts: &[i32]) -> Vec<Asv> {
@@ -454,12 +470,249 @@ fn removeBimeraDenovo(seqs: Vec<String>, counts: Vec<i32>) -> Vec<i32> {
         .collect()
 }
 
+// ── 8. assignTaxonomy ────────────────────────────────────────────────────────
+
+/// Build a taxonomy reference database from a FASTA file.
+///
+/// If `lineage_tsv` is the empty string, lineages are parsed from the FASTA
+/// header descriptions (SILVA / GTDB style `;`-separated). Returns an opaque
+/// `externalptr` that downstream `assignTaxonomy` calls reuse so the costly
+/// bitset profile build runs once per session.
+#[extendr]
+fn buildTaxonomyDb(
+    ref_fasta: &str,
+    lineage_tsv: &str,
+    k: i32,
+    threshold: f64,
+    seed: f64,
+) -> ExternalPtr<RTaxonomyDb> {
+    let records =
+        read_fasta(Path::new(ref_fasta)).unwrap_or_else(|e| panic!("buildTaxonomyDb: {e}"));
+    let lineages = if lineage_tsv.is_empty() {
+        lineage_map_from_fasta(&records)
+    } else {
+        load_lineage_tsv(Path::new(lineage_tsv))
+            .unwrap_or_else(|e| panic!("buildTaxonomyDb: {e}"))
+    };
+    let cfg = TaxonomyConfig {
+        k: k.max(2) as usize,
+        threshold,
+        seed: seed as u64,
+        try_rc: false,
+    };
+    let db = TaxonomyDb::build(&records, &lineages, &cfg)
+        .unwrap_or_else(|e| panic!("buildTaxonomyDb: {e}"));
+    ExternalPtr::new(RTaxonomyDb(db))
+}
+
+/// Assign taxonomy to a set of ASV sequences against a pre-built database.
+///
+/// Returns parallel character vectors for each of the seven taxonomic levels
+/// (`Kingdom..Species`), a `confidence` numeric vector (genus-level
+/// bootstrap), and a flat `bootstrap` numeric vector of length `7 * n_seqs`
+/// (row-major: `[asv_i * 7 + level]`). The R wrapper reshapes the bootstrap
+/// vector into the `[n × 7]` matrix dada2 returns when `outputBootstraps =
+/// TRUE`.
+#[extendr]
+fn assignTaxonomy(
+    seqs: Vec<String>,
+    db: ExternalPtr<RTaxonomyDb>,
+    min_boot: f64,
+    try_rc: bool,
+) -> List {
+    let query: Vec<Vec<u8>> = seqs.iter().map(|s| s.as_bytes().to_vec()).collect();
+    let cfg = TaxonomyConfig {
+        k: 0, // unused at classify-time; DB was built with its own k
+        threshold: (min_boot / 100.0).clamp(0.0, 1.0),
+        seed: 42,
+        try_rc,
+    };
+    let assignments = db
+        .0
+        .classify(&query, &cfg)
+        .unwrap_or_else(|e| panic!("assignTaxonomy: {e}"));
+
+    let n = assignments.len();
+    let mut kingdom = Vec::with_capacity(n);
+    let mut phylum = Vec::with_capacity(n);
+    let mut class_ = Vec::with_capacity(n);
+    let mut order = Vec::with_capacity(n);
+    let mut family = Vec::with_capacity(n);
+    let mut genus = Vec::with_capacity(n);
+    let mut species = Vec::with_capacity(n);
+    let mut confidence = Vec::with_capacity(n);
+    let mut bootstrap = Vec::with_capacity(n * 7);
+    let na = String::from("NA");
+    for a in &assignments {
+        kingdom.push(a.kingdom.clone().unwrap_or_else(|| na.clone()));
+        phylum.push(a.phylum.clone().unwrap_or_else(|| na.clone()));
+        class_.push(a.class.clone().unwrap_or_else(|| na.clone()));
+        order.push(a.order.clone().unwrap_or_else(|| na.clone()));
+        family.push(a.family.clone().unwrap_or_else(|| na.clone()));
+        genus.push(a.genus.clone().unwrap_or_else(|| na.clone()));
+        species.push(a.species.clone().unwrap_or_else(|| na.clone()));
+        confidence.push(a.confidence);
+        bootstrap.extend(a.bootstrap.iter().map(|x| x * 100.0));
+    }
+
+    list!(
+        Kingdom = kingdom,
+        Phylum = phylum,
+        Class = class_,
+        Order = order,
+        Family = family,
+        Genus = genus,
+        Species = species,
+        confidence = confidence,
+        bootstrap = bootstrap
+    )
+}
+
+// ── 8b. assignSpecies ────────────────────────────────────────────────────────
+
+/// Exact-match (with optional Hamming-tolerance) species assignment.
+///
+/// Returns parallel `(genus, species)` character vectors over the input
+/// sequences. Empty strings mean "no match" (or "ambiguous and
+/// `allow_multiple = FALSE`").
+#[extendr]
+fn assignSpecies(
+    seqs: Vec<String>,
+    ref_fasta: &str,
+    allow_multiple: bool,
+    try_rc: bool,
+    n_mismatch: i32,
+) -> List {
+    let ref_records =
+        read_fasta(Path::new(ref_fasta)).unwrap_or_else(|e| panic!("assignSpecies: {e}"));
+    let cfg = SpeciesConfig {
+        try_rc,
+        n_mismatch: n_mismatch.max(0) as u32,
+        allow_multiple,
+    };
+    let query: Vec<Vec<u8>> = seqs.iter().map(|s| s.as_bytes().to_vec()).collect();
+    let out = assign_species(&query, &ref_records, &cfg)
+        .unwrap_or_else(|e| panic!("assignSpecies: {e}"));
+
+    let mut genus = Vec::with_capacity(out.len());
+    let mut species = Vec::with_capacity(out.len());
+    for a in &out {
+        genus.push(a.genus.clone().unwrap_or_default());
+        species.push(a.species.clone().unwrap_or_default());
+    }
+    list!(Genus = genus, Species = species)
+}
+
+// ── 9. removePrimers ─────────────────────────────────────────────────────────
+
+/// Trim PCR primers from FASTQ reads.
+///
+/// `fwd_primer` / `rev_primer` are empty strings when the corresponding
+/// side should be skipped. Returns parallel `(reads_in, reads_out, rownames)`
+/// vectors over the input files — the R wrapper reshapes them into the
+/// `[n × 2]` matrix that dada2's `removePrimers` returns.
+#[allow(clippy::too_many_arguments)]
+#[extendr]
+fn removePrimers(
+    fn_: Vec<String>,
+    fout: Vec<String>,
+    primer_fwd: String,
+    primer_rev: String,
+    max_mismatch: i32,
+    min_overlap: i32,
+    orient: bool,
+) -> List {
+    let _ = orient; // Currently only single-orientation matching is implemented.
+    let cfg = PrimerConfig {
+        fwd_primer: primer_fwd.as_bytes().to_vec(),
+        rev_primer: primer_rev.as_bytes().to_vec(),
+        max_mismatches: max_mismatch.max(0) as u32,
+        min_overlap: min_overlap.max(1) as usize,
+    };
+
+    if fn_.len() != fout.len() {
+        panic!("removePrimers: length(fn) must equal length(fout)");
+    }
+
+    let mut reads_in = Vec::with_capacity(fn_.len());
+    let mut reads_out = Vec::with_capacity(fn_.len());
+    let rownames: Vec<String> = fn_
+        .iter()
+        .map(|p| {
+            Path::new(p)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.clone())
+        })
+        .collect();
+
+    for (input, output) in fn_.iter().zip(fout.iter()) {
+        let stats = trim_primers(&cfg, Path::new(input), Path::new(output))
+            .unwrap_or_else(|e| panic!("removePrimers: {e}"));
+        reads_in.push(stats.reads_in as i32);
+        reads_out.push(stats.reads_out as i32);
+    }
+
+    list!(
+        reads_in = reads_in,
+        reads_out = reads_out,
+        rownames = rownames
+    )
+}
+
+// ── 9b. qualityProfile ───────────────────────────────────────────────────────
+
+/// Compute per-cycle Phred quality statistics for one FASTQ file.
+///
+/// Returns parallel numeric vectors of length `n_cycles`:
+///   - `position` (1-based cycle index)
+///   - `mean`, `q25`, `q50`, `q75` (Phred scores)
+///   - `count` (number of reads reaching that cycle)
+/// plus a scalar `n_reads`.
+#[extendr]
+fn qualityProfile(path: &str, n_reads: i32) -> List {
+    let limit = if n_reads <= 0 { 0 } else { n_reads as usize };
+    let profile = quality_profile(Path::new(path), limit)
+        .unwrap_or_else(|e| panic!("qualityProfile: {e}"));
+    let n = profile.cycle_mean.len();
+    let position: Vec<i32> = (1..=n as i32).collect();
+    let count: Vec<i32> = profile
+        .cycle_count
+        .iter()
+        .map(|&c| c.min(i64::from(i32::MAX) as u64) as i32)
+        .collect();
+    list!(
+        position = position,
+        mean = profile.cycle_mean,
+        q25 = profile.cycle_p25,
+        q50 = profile.cycle_p50,
+        q75 = profile.cycle_p75,
+        count = count,
+        n_reads = profile.n_reads as i32
+    )
+}
+
+// ── 10. rc ───────────────────────────────────────────────────────────────────
+
+/// Reverse-complement a vector of DNA strings.
+///
+/// Non-ACGT bases pass through as `N` (matches the original dada2 behaviour
+/// of leaving ambiguous bases alone after RC). Vectorised so a single FFI
+/// crossing handles all ASVs from a sequence table.
+#[extendr]
+fn rc(seqs: Vec<String>) -> Vec<String> {
+    seqs.iter()
+        .map(|s| String::from_utf8_lossy(&reverse_complement(s.as_bytes())).into_owned())
+        .collect()
+}
+
 // ── Module registration ───────────────────────────────────────────────────────
 
 extendr_module! {
     mod SpeedDada;
     impl RErrorModel;
     impl RDereped;
+    impl RTaxonomyDb;
     fn filterAndTrim;
     fn learnErrors;
     fn derepFastq;
@@ -470,4 +723,10 @@ extendr_module! {
     fn mergePairs;
     fn makeSequenceTable;
     fn removeBimeraDenovo;
+    fn removePrimers;
+    fn buildTaxonomyDb;
+    fn assignTaxonomy;
+    fn assignSpecies;
+    fn qualityProfile;
+    fn rc;
 }

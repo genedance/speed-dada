@@ -94,6 +94,65 @@ filterAndTrim <- function(fwd, filt, rev = NULL, filt.rev = NULL,
   invisible(mat)
 }
 
+# ── 1b. removePrimers ────────────────────────────────────────────────────────
+
+#' Remove PCR Primers from FASTQ Reads
+#'
+#' Drop-in replacement for \code{dada2::removePrimers}. Locates the forward
+#' and reverse primers in each read and writes the trimmed insert to
+#' \code{fout}. Reads where either primer cannot be matched within
+#' \code{max.mismatch} are discarded.
+#'
+#' @param fn Character vector of input FASTQ paths.
+#' @param fout Character vector of output FASTQ paths.
+#' @param primer.fwd Forward primer sequence (5'->3'). Empty string skips.
+#' @param primer.rev Reverse primer sequence (5'->3' on the same strand
+#'   as the read; SpeedDada matches it near the 3' end). Empty string skips.
+#' @param max.mismatch Maximum mismatches when locating each primer.
+#' @param min.overlap Minimum primer bases required to call a match.
+#' @param orient Accepted for compatibility; SpeedDada always searches the
+#'   forward orientation only. Reverse-orientation reads should be reverse-
+#'   complemented before calling this function.
+#' @param allow.indels Not supported; raises an error if \code{TRUE}.
+#' @param compress Accepted for compatibility; output is plain FASTQ.
+#' @param verbose Logical: ignored.
+#' @param ... Extra arguments ignored.
+#'
+#' @return Integer matrix [files x 2] with column names
+#'   \code{c("reads.in", "reads.out")}.
+#'
+#' @export
+removePrimers <- function(fn, fout, primer.fwd = "", primer.rev = "",
+                          max.mismatch = 2L, min.overlap = 4L,
+                          orient = TRUE, allow.indels = FALSE,
+                          compress = TRUE, verbose = FALSE, ...) {
+  if (isTRUE(allow.indels))
+    stop("SpeedDada: removePrimers(allow.indels = TRUE) is not supported; ",
+         "the current primer matcher uses Hamming distance only")
+  if (length(fn) != length(fout))
+    stop("SpeedDada: length(fn) must equal length(fout)")
+
+  raw <- .Call("wrap__removePrimers",
+    as.character(fn),
+    as.character(fout),
+    as.character(primer.fwd %||% ""),
+    as.character(primer.rev %||% ""),
+    as.integer(max.mismatch),
+    as.integer(min.overlap),
+    isTRUE(orient))
+
+  mat <- matrix(
+    c(as.integer(raw$reads_in), as.integer(raw$reads_out)),
+    nrow = length(raw$reads_in),
+    ncol = 2L,
+    dimnames = list(raw$rownames, c("reads.in", "reads.out"))
+  )
+  invisible(mat)
+}
+
+# Local NULL-coalesce so users don't need to depend on rlang.
+`%||%` <- function(a, b) if (is.null(a)) b else a
+
 # ── 2. learnErrors ───────────────────────────────────────────────────────────
 
 #' Learn Error Rates from FASTQ Files

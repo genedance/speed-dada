@@ -9,7 +9,7 @@
 //! a 32× reduction that keeps the entire database in L3 cache for realistic
 //! reference set sizes.
 
-use crate::{io::fasta::FastaRecord, Dada2Error, Kmer};
+use crate::{io::fasta::FastaRecord, merge::reverse_complement, Dada2Error, Kmer};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::Path;
@@ -42,6 +42,10 @@ pub struct TaxonAssignment {
     pub species: Option<String>,
     /// Bootstrap confidence at genus level (0..1).
     pub confidence: f64,
+    /// Per-level bootstrap confidence `[kingdom, phylum, class, order,
+    /// family, genus, species]`, each in 0..1. Mirrors dada2's
+    /// `outputBootstraps = TRUE` matrix.
+    pub bootstrap: [f64; 7],
 }
 
 /// Configuration for the taxonomy classifier.
@@ -53,6 +57,10 @@ pub struct TaxonomyConfig {
     pub threshold: f64,
     /// RNG seed for bootstrap subsampling.
     pub seed: u64,
+    /// If true, also classify the reverse complement of each query and keep
+    /// whichever orientation yields a higher genus-level confidence. Mirrors
+    /// dada2's `tryRC` argument.
+    pub try_rc: bool,
 }
 
 impl Default for TaxonomyConfig {
@@ -61,6 +69,7 @@ impl Default for TaxonomyConfig {
             k: DEFAULT_K,
             threshold: DEFAULT_THRESHOLD,
             seed: 42,
+            try_rc: false,
         }
     }
 }
@@ -145,14 +154,31 @@ impl TaxonomyDb {
         log::info!("assign_taxonomy: classifying {n} sequences");
         let assignments: Vec<TaxonAssignment> = seqs
             .par_iter()
-            .map(|seq| self.classify_one(seq, cfg))
+            .map(|seq| {
+                let fwd = self.classify_one(seq, cfg);
+                if cfg.try_rc {
+                    let rc = reverse_complement(seq);
+                    let rev = self.classify_one(&rc, cfg);
+                    // Keep the orientation with higher genus-level confidence.
+                    if rev.confidence > fwd.confidence {
+                        rev
+                    } else {
+                        fwd
+                    }
+                } else {
+                    fwd
+                }
+            })
             .collect();
 
         Ok(assignments)
     }
 
     fn classify_one(&self, seq: &[u8], cfg: &TaxonomyConfig) -> TaxonAssignment {
-        fn get(lin: Option<&Vec<String>>, i: usize) -> Option<String> {
+        fn get(lin: Option<&Vec<String>>, i: usize, conf: f64, threshold: f64) -> Option<String> {
+            if conf < threshold {
+                return None;
+            }
             lin.and_then(|l| l.get(i))
                 .filter(|s| !s.is_empty())
                 .cloned()
@@ -164,19 +190,18 @@ impl TaxonomyDb {
 
         let best_idx = self.best_match_bits(&query_bits);
         let best_label = self.labels[best_idx].as_str();
-        let best_genus = self.genus_of(best_label);
+        let best_lineage = self.lineages.get(best_label).cloned();
 
-        // Bootstrap confidence: resample 1/8 of query k-mers, find best match.
+        // Track per-level matches across bootstrap reps.
+        let mut level_hits = [0u32; 7];
         let mut seed = cfg.seed;
         let n_sub = (query_kmers.len() / 8).max(1);
-        let mut genus_hits = 0u32;
         let mut sub_bits = vec![0u64; self.n_words];
 
         for _rep in 0..N_BOOTSTRAP {
             seed = seed
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1_442_695_040_888_963_407);
-            // Reset and fill subsample bitset (no Vec allocation per rep).
             sub_bits.fill(0);
             for i in 0..n_sub {
                 #[allow(clippy::cast_possible_truncation)]
@@ -187,29 +212,36 @@ impl TaxonomyDb {
             }
             let boot_idx = self.best_match_bits(&sub_bits);
             let boot_label = self.labels[boot_idx].as_str();
-            if self.genus_of(boot_label) == best_genus && best_genus.is_some() {
-                genus_hits += 1;
+            let boot_lineage = self.lineages.get(boot_label);
+            for lvl in 0..7 {
+                let a = best_lineage.as_ref().and_then(|l| l.get(lvl));
+                let b = boot_lineage.and_then(|l| l.get(lvl));
+                if let (Some(a), Some(b)) = (a, b) {
+                    if !a.is_empty() && a == b {
+                        level_hits[lvl] += 1;
+                    }
+                }
             }
         }
 
         #[allow(clippy::cast_precision_loss)]
-        let confidence = f64::from(genus_hits) / N_BOOTSTRAP as f64;
-        let lineage = self.lineages.get(best_label);
+        let bootstrap: [f64; 7] = std::array::from_fn(|i| {
+            f64::from(level_hits[i]) / N_BOOTSTRAP as f64
+        });
+        let confidence = bootstrap[5];
+        let lineage = best_lineage.as_ref();
 
         TaxonAssignment {
             asv: crate::bytes_to_hex(seq),
-            kingdom: get(lineage, 0),
-            phylum: get(lineage, 1),
-            class: get(lineage, 2),
-            order: get(lineage, 3),
-            family: get(lineage, 4),
-            genus: if confidence >= cfg.threshold {
-                get(lineage, 5)
-            } else {
-                None
-            },
+            kingdom: get(lineage, 0, bootstrap[0], cfg.threshold),
+            phylum: get(lineage, 1, bootstrap[1], cfg.threshold),
+            class: get(lineage, 2, bootstrap[2], cfg.threshold),
+            order: get(lineage, 3, bootstrap[3], cfg.threshold),
+            family: get(lineage, 4, bootstrap[4], cfg.threshold),
+            genus: get(lineage, 5, bootstrap[5], cfg.threshold),
             species: None,
             confidence,
+            bootstrap,
         }
     }
 
@@ -241,9 +273,39 @@ impl TaxonomyDb {
         words
     }
 
-    fn genus_of(&self, label: &str) -> Option<String> {
-        self.lineages.get(label).and_then(|l| l.get(5)).cloned()
+    /// Read-only access to the labels (one per reference sequence).
+    #[must_use]
+    pub fn labels(&self) -> &[String] {
+        &self.labels
     }
+}
+
+/// Build a lineage map from FASTA records whose description/header carries
+/// the taxonomy string (SILVA / GTDB style: `>SeqID Kingdom;Phylum;...;Species`).
+///
+/// The default reference format used by dada2's `assignTaxonomy` packs the
+/// lineage into the FASTA header so users pass a single file; this helper
+/// makes that work for SpeedDada too. Sequence IDs are read from `record.id`,
+/// lineages from `record.description` (split on `;`).
+#[must_use]
+pub fn lineage_map_from_fasta(records: &[FastaRecord]) -> HashMap<String, Vec<String>> {
+    records
+        .iter()
+        .map(|r| {
+            // dada2-style headers often put the whole lineage in `id` with no
+            // separate description; try description first, fall back to id.
+            let raw = r
+                .description
+                .as_deref()
+                .filter(|s| s.contains(';'))
+                .unwrap_or(&r.id);
+            let lineage: Vec<String> = raw
+                .split(';')
+                .map(|s| s.trim().trim_end_matches(';').to_owned())
+                .collect();
+            (r.id.clone(), lineage)
+        })
+        .collect()
 }
 
 /// Load a lineage map from a tab-separated file.
