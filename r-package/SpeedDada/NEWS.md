@@ -1,6 +1,6 @@
 # SpeedDada NEWS
 
-## SpeedDada 0.99.2 (in development)
+## SpeedDada 0.99.2
 
 ### dada2 R-API parity
 

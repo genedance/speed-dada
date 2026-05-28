@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version       = "0.99.1"
+version       = "0.99.2"
 edition       = "2021"
 rust-version  = "1.78"
 authors       = ["Alexandre Jousset <info@genedance.com>"]
