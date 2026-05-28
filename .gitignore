@@ -30,3 +30,8 @@ bench_logs/
 
 # OS metadata
 .DS_Store
+
+# Claude state — tracked only on the `claude-state` orphan branch in
+# wurstator/speed-dada (private). Never on `main`, which is shared with
+# the public genedance/speed-dada mirror.
+.claude/
