@@ -1,5 +1,14 @@
 # SpeedDada NEWS
 
+## SpeedDada 0.99.1
+
+* Prebuilt binary R packages now attached to each GitHub Release for
+  macOS Apple Silicon (`.tgz`), Windows x64 (`.zip`), and Linux x86_64
+  (`_R_x86_64-pc-linux-gnu.tar.gz`). Installing them does not invoke
+  the Rust compiler on the user's machine — non-technical users no
+  longer need rustup on the supported platforms.
+* No functional changes to the pipeline.
+
 ## SpeedDada 0.99.0
 
 * Initial public release prepared for Bioconductor submission.

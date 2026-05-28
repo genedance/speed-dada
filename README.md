@@ -229,7 +229,7 @@ R CMD INSTALL --library=~/R/library .
 ```python
 import speeddada
 
-speeddada.__version__        # "0.99.0"
+speeddada.__version__        # "0.99.1"
 speeddada.init_logging()     # enable Rust-level log output (default level: "info")
 
 # Auto-detect optimal thread count from available cores and RAM
@@ -654,42 +654,67 @@ Python ≥ 3.9). Windows builds use Rtools' MinGW64 toolchain via
 
 ## Installation (end-user quick path)
 
-Distributed via **GitHub Releases** for now. PyPI (`pip install
-speeddada`) and Bioconductor (`BiocManager::install("SpeedDada")`) will
-land after the initial public-release testing window.
+The **R package** is the current focus for end-user distribution.
+The Python package (`pip install speeddada` via PyPI) will follow in
+a later release once the PyPI Trusted Publisher is configured; for
+now Python users install a prebuilt wheel directly from the GitHub
+Release page (see below).
 
-**Python — pre-built wheel (no Rust toolchain needed):**
-
-Grab the wheel that matches your platform from the
-[v0.99.0 release page](https://github.com/Genedance/speed-dada/releases/tag/v0.99.0)
-and `pip install <url>`:
-
-```bash
-# example for linux x86_64 + cpython 3.12; substitute your platform tag
-pip install "https://github.com/Genedance/speed-dada/releases/download/v0.99.0/speeddada-0.99.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
-```
-
-**Python — source install (any platform, needs Rust):**
-
-```bash
-pip install "git+https://github.com/Genedance/speed-dada.git@v0.99.0#subdirectory=crates/speeddada-py"
-```
-
-**R — pre-built source tarball:**
+### R
 
 ```r
+# macOS Apple Silicon (M-series Macs):
 install.packages(
-  "https://github.com/Genedance/speed-dada/releases/download/v0.99.0/SpeedDada_0.99.0.tar.gz",
-  repos = NULL, type = "source"
+  "https://github.com/Genedance/speed-dada/releases/download/v0.99.1/SpeedDada_0.99.1.tgz",
+  repos = NULL
+)
+
+# Windows x64:
+install.packages(
+  "https://github.com/Genedance/speed-dada/releases/download/v0.99.1/SpeedDada_0.99.1.zip",
+  repos = NULL
+)
+
+# Linux x86_64:
+install.packages(
+  "https://github.com/Genedance/speed-dada/releases/download/v0.99.1/SpeedDada_0.99.1_R_x86_64-pc-linux-gnu.tar.gz",
+  repos = NULL
 )
 ```
 
-**R — install from GitHub (needs Rust + libbz2):**
+These are prebuilt binary R packages — installing them does **not**
+invoke the Rust compiler on your machine. Find all release assets on
+the [v0.99.1 release page](https://github.com/Genedance/speed-dada/releases/tag/v0.99.1).
+
+Intel Macs and aarch64 Linux currently fall through to the source
+install path below.
+
+### Python — install a wheel from the Release page
+
+PyPI publishing is planned for a future release. For now, pick the
+wheel matching your platform on the [release page](https://github.com/Genedance/speed-dada/releases/latest)
+and `pip install <url>`:
+
+```bash
+# example: linux x86_64 + cpython 3.12 — substitute your platform tag
+pip install "https://github.com/Genedance/speed-dada/releases/download/v0.99.1/speeddada-0.99.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+```
+
+### Build from source (any platform, requires Rust ≥ 1.78)
+
+Install [rustup](https://rustup.rs) first, then:
+
+```bash
+# Python from git
+pip install "git+https://github.com/Genedance/speed-dada.git@v0.99.1#subdirectory=crates/speeddada-py"
+```
 
 ```r
-remotes::install_github("Genedance/speed-dada",
-                        ref    = "v0.99.0",
-                        subdir = "r-package/SpeedDada")
+# R from the source tarball (needs libbz2 dev headers on Linux)
+install.packages(
+  "https://github.com/Genedance/speed-dada/releases/download/v0.99.1/SpeedDada_0.99.1.tar.gz",
+  repos = NULL, type = "source"
+)
 ```
 
 See the **Building** section above for development builds and the

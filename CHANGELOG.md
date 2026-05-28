@@ -4,6 +4,38 @@ All notable changes to this project are documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.99.1 — 2026-05-28
+
+One-command R install for non-technical users. No functional changes
+to the pipeline itself. PyPI publishing for the Python package is
+**deferred to a later release**.
+
+### Added
+
+- **R**: prebuilt binary R packages now attached to each tagged
+  GitHub Release for macOS Apple Silicon (`.tgz`), Windows x64
+  (`.zip`), and Linux x86_64 (`_R_x86_64-pc-linux-gnu.tar.gz`).
+  Installing these does **not** invoke the Rust compiler on the
+  user's machine. CI job `r-binaries` in `wheels.yml` builds them
+  on tag pushes alongside the existing source tarball.
+
+### Changed
+
+- `README.md` install section rewritten to lead with the prebuilt R
+  binary path. Python install path stays on the
+  `pip install <wheel-url>` flow attached to the GitHub Release
+  pending PyPI publish.
+
+### Notes
+
+- Intel Macs and uncommon Linux architectures (e.g. aarch64) still
+  fall through to source install on the R side and need rustup.
+- The R source tarball remains attached to the release as well, so
+  air-gapped or unusual platforms can still build from source.
+- Python wheels continue to ship as GitHub Release assets; the
+  `pypi-publish` job and `pip install speeddada` path will land in a
+  later release once the pypi.org Trusted Publisher is configured.
+
 ## 0.99.0 — 2026-05-27
 
 Initial public release under the **speed-dada** brand (R: `SpeedDada`,

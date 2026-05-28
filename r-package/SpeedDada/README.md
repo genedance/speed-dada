@@ -13,29 +13,53 @@ uses **~10x less peak memory**.
 
 ## Installation
 
-SpeedDada is distributed via **GitHub Releases** for now (Bioconductor
-submission will follow after the initial testing window). The package
-ships as source, so you need:
+Prebuilt binary packages are attached to each tagged release for the
+common desktop platforms. Installing them does **not** invoke the
+Rust compiler on your machine.
+
+### Prebuilt binaries (recommended — no Rust required)
+
+```r
+# macOS Apple Silicon (M-series Macs)
+install.packages(
+  "https://github.com/Genedance/speed-dada/releases/download/v0.99.1/SpeedDada_0.99.1.tgz",
+  repos = NULL
+)
+
+# Windows x64
+install.packages(
+  "https://github.com/Genedance/speed-dada/releases/download/v0.99.1/SpeedDada_0.99.1.zip",
+  repos = NULL
+)
+
+# Linux x86_64
+install.packages(
+  "https://github.com/Genedance/speed-dada/releases/download/v0.99.1/SpeedDada_0.99.1_R_x86_64-pc-linux-gnu.tar.gz",
+  repos = NULL
+)
+```
+
+Requires R ≥ 4.1.
+
+### From source (Intel Mac, aarch64 Linux, or any other platform)
+
+The source tarball compiles the Rust core during installation, so you
+need:
 
 * R >= 4.1
 * A Rust toolchain (install via [rustup](https://rustup.rs))
 * `libbz2-dev` (Linux only — `apt install libbz2-dev` / `dnf install bzip2-devel`)
 
-### From a release tarball (recommended)
-
 ```r
 install.packages(
-  "https://github.com/Genedance/speed-dada/releases/download/v0.99.0/SpeedDada_0.99.0.tar.gz",
+  "https://github.com/Genedance/speed-dada/releases/download/v0.99.1/SpeedDada_0.99.1.tar.gz",
   repos = NULL, type = "source"
 )
-```
 
-### From GitHub at a tag
-
-```r
+# Or from GitHub at a tag
 # install.packages("remotes")
 remotes::install_github("Genedance/speed-dada",
-                        ref    = "v0.99.0",
+                        ref    = "v0.99.1",
                         subdir = "r-package/SpeedDada")
 ```
 

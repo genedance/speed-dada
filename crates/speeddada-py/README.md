@@ -13,10 +13,11 @@ pooling, and compact bitset taxonomy profiles.
 
 ## Installation
 
-Distributed via **GitHub Releases** for now (PyPI publishing will follow
-after the initial testing window). Pre-built wheels are attached to
-every tagged release for Linux (x86_64 / aarch64), macOS (x86_64 /
-arm64), and Windows (x86_64).
+Distributed via **GitHub Releases** for now. PyPI publishing
+(`pip install speeddada`) will follow in a later release once the
+Trusted Publisher is set up. Pre-built wheels are attached to every
+tagged release for Linux (x86_64 / aarch64 / i686), macOS
+(universal2: Intel + Apple Silicon), and Windows x64.
 
 **Pre-built wheel (no Rust toolchain needed):** pick the matching wheel
 from the [latest release](https://github.com/Genedance/speed-dada/releases/latest)
@@ -24,13 +25,13 @@ and install it directly:
 
 ```bash
 # example: linux x86_64, cpython 3.12 — substitute your platform tag
-pip install "https://github.com/Genedance/speed-dada/releases/download/v0.99.0/speeddada-0.99.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+pip install "https://github.com/Genedance/speed-dada/releases/download/v0.99.1/speeddada-0.99.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
 ```
 
 **Source install (any platform, needs Rust):**
 
 ```bash
-pip install "git+https://github.com/Genedance/speed-dada.git@v0.99.0#subdirectory=crates/speeddada-py"
+pip install "git+https://github.com/Genedance/speed-dada.git@v0.99.1#subdirectory=crates/speeddada-py"
 ```
 
 Building from source requires a Rust toolchain (install via

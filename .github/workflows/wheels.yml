@@ -118,6 +118,55 @@ jobs:
           name: wheels-sdist
           path: crates/speeddada-py/dist
 
+  # ─── Build prebuilt R binary packages (no Rust on user side) on tag ──────
+  # End users install with one line, no rustup install required:
+  #   install.packages("https://.../SpeedDada_x.y.z.tgz", repos = NULL)   # macOS arm64
+  #   install.packages("https://.../SpeedDada_x.y.z.zip", repos = NULL)   # Windows x64
+  #   install.packages("https://.../SpeedDada_x.y.z_R_x86_64-pc-linux-gnu.tar.gz", repos = NULL)
+  r-binaries:
+    name: Build R binary (${{ matrix.config.os }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.config.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - { os: macos-14,       artifact: r-binary-macos-arm64 }
+          - { os: windows-latest, artifact: r-binary-windows }
+          - { os: ubuntu-latest,  artifact: r-binary-linux-x86_64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install libbz2-dev (Linux only)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libbz2-dev
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-pandoc@v2
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          working-directory: r-package/SpeedDada
+          extra-packages: |
+            any::knitr
+            any::rmarkdown
+          needs: build
+      - name: Vendor Rust crates into r-package/SpeedDada/src/rust
+        shell: bash
+        run: bash tools/vendor-r-rust.sh
+      - name: Build binary R package
+        shell: bash
+        run: R CMD INSTALL --build r-package/SpeedDada
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.config.artifact }}
+          path: |
+            SpeedDada_*.tgz
+            SpeedDada_*.zip
+            SpeedDada_*_R_*.tar.gz
+          if-no-files-found: error
+
   # ─── Build the R source tarball (vendored Rust src) on tag ────────────────
   r-tarball:
     name: Build R source tarball
@@ -152,18 +201,17 @@ jobs:
           name: r-source-tarball
           path: SpeedDada_*.tar.gz
 
-  # ─── Attach Python wheels + sdist + R tarball to the GitHub Release ───────
-  # Users install via `pip install <wheel-url>` /
-  # `install.packages(<tarball-url>, repos = NULL)` until PyPI + Bioconductor
-  # publishing are enabled. To switch the Python publish target to PyPI,
-  # restore the previous `release: Release to PyPI` job (see git history)
-  # and configure a Trusted Publisher on pypi.org pointing at this repo +
-  # wheels.yml + the `pypi` environment.
+  # ─── Attach all Python + R artefacts to the GitHub Release ────────────────
+  # Python wheels still ship as Release assets via this job. PyPI publish
+  # (`pip install speeddada`) will land in a later release once the
+  # Trusted Publisher is set up on pypi.org; until then users `pip install
+  # <wheel-url>` from the Release page. R users get prebuilt binaries
+  # (.tgz / .zip / Linux tar.gz) — see the `r-binaries` job above.
   release:
-    name: Attach wheels + R tarball to GitHub Release
+    name: Attach wheels + R tarball + R binaries to GitHub Release
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, linux-aarch64, macos, windows, sdist, r-tarball]
+    needs: [linux, linux-aarch64, macos, windows, sdist, r-tarball, r-binaries]
     permissions:
       contents: write
     steps:
@@ -174,7 +222,7 @@ jobs:
           merge-multiple: true
       - name: List built artefacts
         run: ls -la dist/
-      - name: Upload wheels + sdist + R tarball to the GitHub Release
+      - name: Upload all artefacts to the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
