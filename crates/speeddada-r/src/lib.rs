@@ -15,7 +15,7 @@ use speeddada_core::{
         dada_pseudo as dada_pseudo_core, Asv, DadaConfig,
     },
     derep::{derep_fastq, UniqueSeq},
-    error_model::{learn_errors, ErrorLearningConfig, ErrorModel},
+    error_model::{detect_errfun, learn_errors, ErrFunKind, ErrorLearningConfig, ErrorModel},
     filter::{filter_and_trim_many, filter_and_trim_paired_many, FilterConfig},
     io::{fasta::read_fasta, fastq::read_fastq},
     merge::{merge_pairs, reverse_complement, MergeConfig},
@@ -183,9 +183,11 @@ fn filterAndTrim(
 /// Learn error rates from FASTQ files.
 ///
 /// `nbases` is converted to a read count via `nbases / 150.0`.
+/// `err_fun` is one of "auto" (default), "loess", "binned", "pacbio",
+/// "logistic" — see [`ErrFunKind`].
 /// Returns an opaque [`RErrorModel`] external pointer.
 #[extendr]
-fn learnErrors(fls: Vec<String>, nbases: f64) -> ExternalPtr<RErrorModel> {
+fn learnErrors(fls: Vec<String>, nbases: f64, err_fun: &str) -> ExternalPtr<RErrorModel> {
     let n_reads = ((nbases / 150.0).round() as usize).clamp(10_000, 10_000_000);
     let mut all_records = Vec::new();
     for path in &fls {
@@ -197,10 +199,89 @@ fn learnErrors(fls: Vec<String>, nbases: f64) -> ExternalPtr<RErrorModel> {
     }
     let cfg = ErrorLearningConfig {
         n_reads,
+        method: parse_err_fun(err_fun),
         ..Default::default()
     };
     let model = learn_errors(&all_records, &cfg).unwrap_or_else(|_| ErrorModel::illumina_default());
     ExternalPtr::new(RErrorModel(model))
+}
+
+/// Sniff a FASTQ file's quality profile and report which error-function
+/// the auto-detector would pick. Used by the R wrapper to print an
+/// informative message (and to warn on ONT-shaped data).
+///
+/// Returns a list `(kind, mean_q, max_q, distinct_q, mean_len)` so the
+/// R side can compose the message itself.
+#[extendr]
+fn detectErrFun(fls: Vec<String>, nbases: f64) -> List {
+    let n_reads = ((nbases / 150.0).round() as usize).clamp(10_000, 10_000_000);
+    let mut all_records = Vec::new();
+    for path in &fls {
+        let recs = read_fastq(Path::new(path)).unwrap_or_else(|e| panic!("detectErrFun: {e}"));
+        all_records.extend(recs);
+        if all_records.len() >= n_reads {
+            break;
+        }
+    }
+    let kind = detect_errfun(&all_records);
+    // Recompute summary stats so we can report them to the R user too.
+    let mut sum_q: u64 = 0;
+    let mut sum_len: u64 = 0;
+    let mut max_q: u8 = 0;
+    let mut seen = [false; 96];
+    let mut n_bytes: u64 = 0;
+    for rec in &all_records {
+        sum_len += rec.qual.len() as u64;
+        for &qc in &rec.qual {
+            let p = qc.saturating_sub(33);
+            seen[(p as usize).min(95)] = true;
+            sum_q += u64::from(p);
+            max_q = max_q.max(p);
+            n_bytes += 1;
+        }
+    }
+    let distinct = seen.iter().filter(|&&b| b).count() as i32;
+    let mean_q = if n_bytes > 0 {
+        sum_q as f64 / n_bytes as f64
+    } else {
+        0.0
+    };
+    let mean_len = if !all_records.is_empty() {
+        sum_len as f64 / all_records.len() as f64
+    } else {
+        0.0
+    };
+    list!(
+        kind = err_fun_name(kind),
+        mean_q = mean_q,
+        max_q = i32::from(max_q),
+        distinct_q = distinct,
+        mean_len = mean_len
+    )
+}
+
+fn parse_err_fun(s: &str) -> ErrFunKind {
+    match s.to_ascii_lowercase().as_str() {
+        "auto" | "" => ErrFunKind::Auto,
+        "loess" => ErrFunKind::Loess,
+        "binned" | "makebinnedqualerrfun" => ErrFunKind::Binned,
+        "pacbio" | "pacbioerrfun" => ErrFunKind::PacBio,
+        "logistic" => ErrFunKind::Logistic,
+        other => panic!(
+            "learnErrors: unknown errFun '{other}'. \
+             Expected one of: auto, loess, binned, pacbio, logistic"
+        ),
+    }
+}
+
+fn err_fun_name(k: ErrFunKind) -> &'static str {
+    match k {
+        ErrFunKind::Auto => "auto",
+        ErrFunKind::Loess => "loess",
+        ErrFunKind::Binned => "binned",
+        ErrFunKind::PacBio => "pacbio",
+        ErrFunKind::Logistic => "logistic",
+    }
 }
 
 // ── 3. derepFastq ────────────────────────────────────────────────────────────
@@ -715,6 +796,7 @@ extendr_module! {
     impl RTaxonomyDb;
     fn filterAndTrim;
     fn learnErrors;
+    fn detectErrFun;
     fn derepFastq;
     fn dada;
     fn dada_many;

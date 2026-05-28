@@ -160,10 +160,22 @@ removePrimers <- function(fn, fout, primer.fwd = "", primer.rev = "",
 #' Drop-in replacement for \code{dada2::learnErrors}. Estimates a substitution
 #' error model from FASTQ data using the Rust EM implementation.
 #'
+#' The default \code{errFun = "auto"} sniffs the quality profile and picks
+#' \code{loess} for full-range Illumina (MiSeq / HiSeq full quality),
+#' \code{binned} for binned-quality platforms (NovaSeq, NextSeq, MGI
+#' DNBSEQ), or \code{pacbio} for near-Q40 long reads (PacBio CCS / HiFi).
+#' Oxford Nanopore data is detected and warned about — the substitution-
+#' dominant model used here will not track ONT's indel-heavy errors well;
+#' proper ONT support requires indel-aware alignment.
+#'
 #' @param fls Character vector of FASTQ paths, or a directory containing them.
 #' @param nbases Total bases to use for learning (converted to approx. read
 #'   count internally).
+#' @param errFun One of \code{"auto"} (default), \code{"loess"},
+#'   \code{"binned"}, \code{"pacbio"}, or \code{"logistic"}. Maps to dada2's
+#'   \code{loessErrfun} / \code{makeBinnedQualErrfun} / \code{PacBioErrfun}.
 #' @param multithread Accepted for compatibility; Rust uses Rayon automatically.
+#' @param verbose Logical: if \code{TRUE}, print the detected platform / errFun.
 #' @param ... Extra arguments ignored for compatibility.
 #'
 #' @return Opaque error-model handle (an R \code{externalptr}) consumed by
@@ -175,12 +187,35 @@ removePrimers <- function(fn, fout, primer.fwd = "", primer.rev = "",
 #' err
 #'
 #' @export
-learnErrors <- function(fls, nbases = 1e8, multithread = FALSE, ...) {
+learnErrors <- function(fls, nbases = 1e8, errFun = "auto",
+                        multithread = FALSE, verbose = FALSE, ...) {
   .ignore_multithread(multithread)
   if (length(fls) == 1L && dir.exists(fls)) {
     fls <- list.files(fls, pattern = "\\.fastq(\\.gz)?$", full.names = TRUE)
   }
-  .Call("wrap__learnErrors", as.character(fls), as.double(nbases))
+  errFun <- tolower(as.character(errFun))[1L]
+  if (identical(errFun, "auto")) {
+    info <- .Call("wrap__detectErrFun", as.character(fls), as.double(nbases))
+    if (isTRUE(verbose)) {
+      message(sprintf(
+        "SpeedDada::learnErrors auto-detect: platform=%s, distinct_q=%d, mean_q=%.1f, max_q=%d, mean_len=%.0f",
+        info$kind, as.integer(info$distinct_q),
+        as.numeric(info$mean_q), as.integer(info$max_q),
+        as.numeric(info$mean_len)))
+    }
+    if (as.numeric(info$mean_q) < 20 && as.numeric(info$mean_len) > 500) {
+      warning(
+        "SpeedDada: input looks like Oxford Nanopore (mean Phred ",
+        sprintf("%.1f", as.numeric(info$mean_q)),
+        ", mean read length ", sprintf("%.0f", as.numeric(info$mean_len)),
+        " bp). SpeedDada's substitution-dominant error model and single-",
+        "indel gap correction will not track ONT data faithfully — ASVs ",
+        "produced from this run will be inaccurate. Proper ONT support ",
+        "requires banded indel-aware alignment (not yet implemented).")
+    }
+  }
+  .Call("wrap__learnErrors",
+        as.character(fls), as.double(nbases), as.character(errFun))
 }
 
 # ── 3. derepFastq ────────────────────────────────────────────────────────────

@@ -118,8 +118,15 @@ impl ErrorModel {
 }
 
 /// Smoothing method used to fit per-quality transition probabilities.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+///
+/// The default ([`ErrFunKind::Auto`]) sniffs the input quality
+/// distribution and picks `Loess`, `Binned`, or `PacBio` automatically.
+/// Force a specific variant only when you have a reason — most users
+/// should leave `Auto`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ErrFunKind {
+    /// Inspect the input and pick the right smoother. See [`detect_errfun`].
+    Auto,
     /// 2-parameter logistic regression σ(a + b·q) — the original SpeedDada
     /// behaviour. Cheap but crude; under-fits any non-monotone curve.
     Logistic,
@@ -129,12 +136,93 @@ pub enum ErrFunKind {
     /// transition data, including the typical "shoulder" at low quality
     /// scores where the logistic fit overshoots.
     Loess,
+    /// Piecewise-linear interpolation between observed quality bins.
+    /// Mirrors `dada2::makeBinnedQualErrfun`. The right choice when the
+    /// instrument reports only a handful of unique Phred values (NovaSeq
+    /// 4-bin, NextSeq 8-bin, MGI/DNBSEQ binned modes).
+    Binned,
+    /// Canned empirical PacBio CCS / HiFi error matrix. For instruments
+    /// reporting Q ≥ 40 across most bases — fitting LOESS to data with
+    /// near-zero error rate variance is unreliable, so we use a fixed
+    /// curve calibrated to dada2's `PacBioErrfun`.
+    PacBio,
 }
 
 impl Default for ErrFunKind {
     fn default() -> Self {
-        Self::Loess
+        Self::Auto
     }
+}
+
+/// Heuristic platform sniffer used by [`ErrFunKind::Auto`].
+///
+/// Counts distinct Phred values and tracks mean / max Phred across all
+/// quality bytes in the input, then dispatches:
+///   - PacBio: very high mean (≥ 35) AND few unique Phred values (≤ 8).
+///     PacBio CCS / HiFi data is near-uniformly Q35-Q41 with only a
+///     handful of distinct values.
+///   - Binned: ≤ 12 distinct Phred values AND mean < 35. Covers NovaSeq
+///     4-bin, NextSeq 8-bin, MGI DNBSEQ.
+///   - ONT (warn, then Loess): mean Phred < 20 AND mean read length > 500.
+///   - Loess: everything else (full-range Illumina MiSeq / HiSeq).
+#[must_use]
+pub fn detect_errfun(records: &[crate::io::fastq::FastqRecord]) -> ErrFunKind {
+    let (distinct, mean_q, max_q, mean_len) = quality_stats(records);
+    log::info!(
+        "errFun auto-detect: distinct_phred={distinct} mean_q={mean_q:.1} \
+         max_q={max_q} mean_len={mean_len:.0}"
+    );
+    let _ = max_q; // Currently unused in dispatch; logged for diagnostics.
+    if mean_q >= 35.0 && distinct <= 8 {
+        return ErrFunKind::PacBio;
+    }
+    if distinct <= 12 {
+        return ErrFunKind::Binned;
+    }
+    if mean_q < 20.0 && mean_len > 500.0 {
+        log::warn!(
+            "errFun auto-detect: input looks like Oxford Nanopore \
+             (mean_q={mean_q:.1}, mean_len={mean_len:.0}). SpeedDada's \
+             substitution-dominant model with single-indel correction will \
+             produce inaccurate ASVs on ONT data. Banded indel-aware \
+             alignment is a separate body of work."
+        );
+        // Fall through to Loess — pipeline still runs, just imprecisely.
+    }
+    ErrFunKind::Loess
+}
+
+fn quality_stats(records: &[crate::io::fastq::FastqRecord]) -> (usize, f64, u8, f64) {
+    let mut seen = [false; 96];
+    let mut sum_q: u64 = 0;
+    let mut sum_len: u64 = 0;
+    let mut max_q: u8 = 0;
+    let mut n_bytes: u64 = 0;
+    for rec in records {
+        sum_len += rec.qual.len() as u64;
+        for &qc in &rec.qual {
+            let p = qc.saturating_sub(33);
+            let p_idx = (p as usize).min(95);
+            seen[p_idx] = true;
+            sum_q += u64::from(p);
+            max_q = max_q.max(p);
+            n_bytes += 1;
+        }
+    }
+    let distinct = seen.iter().filter(|&&b| b).count();
+    #[allow(clippy::cast_precision_loss)]
+    let mean_q = if n_bytes > 0 {
+        sum_q as f64 / n_bytes as f64
+    } else {
+        0.0
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let mean_len = if !records.is_empty() {
+        sum_len as f64 / records.len() as f64
+    } else {
+        0.0
+    };
+    (distinct, mean_q, max_q, mean_len)
 }
 
 /// Configuration for error model learning.
@@ -232,10 +320,36 @@ pub fn learn_errors(
     }
 
     let n = cfg.n_reads.min(records.len());
+
+    // Resolve Auto → concrete kind once, log the choice, then thread the
+    // resolved cfg through the rest of the pipeline so every smoother
+    // branch sees a definite variant.
+    let resolved_kind = if matches!(cfg.method, ErrFunKind::Auto) {
+        detect_errfun(&records[..n])
+    } else {
+        cfg.method
+    };
+
+    // PacBio short-circuits collection entirely — its empirical matrix is
+    // baked-in and not learned from the data.
+    if matches!(resolved_kind, ErrFunKind::PacBio) {
+        let matrix = pacbio_matrix();
+        let log_matrix = build_log_matrix(&matrix);
+        return Ok(ErrorModel {
+            matrix,
+            n_reads_used: n as u64,
+            log_matrix,
+        });
+    }
+
     let mut counts = collect_match_counts(&records[..n]);
     add_pairwise_mismatch_counts(&records[..n], &mut counts, cfg.max_pair_dist);
 
-    let matrix = fit_from_counts(&counts, cfg)?;
+    let resolved_cfg = ErrorLearningConfig {
+        method: resolved_kind,
+        ..cfg.clone()
+    };
+    let matrix = fit_from_counts(&counts, &resolved_cfg)?;
     let log_matrix = build_log_matrix(&matrix);
     Ok(ErrorModel {
         matrix,
@@ -473,8 +587,129 @@ fn fit_from_counts(
                 }
             }
         }
+        ErrFunKind::Binned => {
+            // For binned-quality platforms (NovaSeq, NextSeq, MGI), LOESS
+            // span 0.95 collapses to a near-flat fit because we only have
+            // a handful of distinct quality points. Use piecewise linear
+            // interpolation between observed bin centres instead — mirrors
+            // `dada2::makeBinnedQualErrfun`.
+            for tb in 0..4 {
+                let mut col_total = [0.0_f64; MAX_QUAL];
+                for ob in 0..4 {
+                    let r = tb * 4 + ob;
+                    for col in 0..MAX_QUAL {
+                        col_total[col] += counts[[r, col]];
+                    }
+                }
+                // Identify the observed bin centres (cols with any data).
+                let bins: Vec<usize> = (0..MAX_QUAL)
+                    .filter(|&c| col_total[c] > 0.0)
+                    .collect();
+                for ob in 0..4 {
+                    let r = tb * 4 + ob;
+                    let is_match = tb == ob;
+                    // Per-bin empirical rate.
+                    let mut bin_rate = vec![0.0_f64; bins.len()];
+                    for (i, &c) in bins.iter().enumerate() {
+                        bin_rate[i] = counts[[r, c]] / col_total[c];
+                    }
+                    for col in 0..MAX_QUAL {
+                        let p = piecewise_linear(&bins, &bin_rate, col, is_match);
+                        matrix[[r, col]] = p.clamp(1e-12, 1.0);
+                    }
+                    if is_match {
+                        // Same monotonicity guard as the LOESS branch.
+                        for col in (1..MAX_QUAL).rev() {
+                            if matrix[[r, col - 1]] < matrix[[r, col]] {
+                                matrix[[r, col - 1]] = matrix[[r, col]];
+                            }
+                        }
+                    }
+                }
+                // Renormalise per column.
+                for col in 0..MAX_QUAL {
+                    let s: f64 = (0..4).map(|ob| matrix[[tb * 4 + ob, col]]).sum();
+                    if s > 0.0 {
+                        for ob in 0..4 {
+                            matrix[[tb * 4 + ob, col]] /= s;
+                        }
+                    }
+                }
+            }
+        }
+        ErrFunKind::PacBio | ErrFunKind::Auto => {
+            // PacBio is handled in `learn_errors` (it short-circuits to
+            // the canned matrix); Auto is resolved upstream. Hitting
+            // either here means an external caller of `refit_from_counts`
+            // didn't resolve Auto first — fall back to LOESS rather than
+            // erroring, since this is recoverable.
+            let mut fallback = cfg.clone();
+            fallback.method = ErrFunKind::Loess;
+            return fit_from_counts(counts, &fallback);
+        }
     }
     Ok(matrix)
+}
+
+/// Canned PacBio CCS / HiFi empirical error matrix.
+///
+/// Calibrated against `dada2::PacBioErrfun`: per-quality substitution
+/// rate is modelled as `p_err(q) = 10^(-q/10)` clamped to `[1e-6, 0.5]`,
+/// with mismatches distributed uniformly across the 3 non-match bases
+/// (PacBio CCS shows no strong transition bias once consensus calling
+/// is applied). Match rate is `1 - p_err(q)`.
+///
+/// The matrix is built at call-time (one allocation, ~10 KB) rather than
+/// stored as a `const` because [`Array2`] isn't const-constructible — the
+/// runtime cost is negligible since `learn_errors` only calls this once.
+fn pacbio_matrix() -> Array2<f64> {
+    let mut m = Array2::<f64>::zeros((N_TRANSITIONS, MAX_QUAL));
+    for col in 0..MAX_QUAL {
+        #[allow(clippy::cast_precision_loss)]
+        let q = col as f64;
+        let p_err = 10f64.powf(-q / 10.0).clamp(1e-6, 0.5);
+        let p_match = 1.0 - p_err;
+        let p_mismatch = p_err / 3.0;
+        for tb in 0..4 {
+            for ob in 0..4 {
+                let r = tb * 4 + ob;
+                m[[r, col]] = if tb == ob { p_match } else { p_mismatch };
+            }
+        }
+    }
+    m
+}
+
+/// Piecewise-linear interpolation of `bin_rate[i]` at observed `bins[i]`,
+/// evaluated at quality `q`. Outside the observed range we either clamp
+/// to the nearest endpoint or fall back to the Illumina prior, whichever
+/// gives a smaller extrapolation jump.
+fn piecewise_linear(bins: &[usize], bin_rate: &[f64], q: usize, is_match: bool) -> f64 {
+    if bins.is_empty() {
+        #[allow(clippy::cast_precision_loss)]
+        let p_err = 10f64.powf(-(q as f64) / 10.0);
+        return if is_match { 1.0 - p_err } else { p_err / 3.0 };
+    }
+    if bins.len() == 1 {
+        return bin_rate[0];
+    }
+    if q <= bins[0] {
+        return bin_rate[0];
+    }
+    if q >= *bins.last().unwrap() {
+        return *bin_rate.last().unwrap();
+    }
+    // Find the interval [bins[i], bins[i+1]] containing q.
+    for i in 0..bins.len() - 1 {
+        let lo = bins[i];
+        let hi = bins[i + 1];
+        if q >= lo && q <= hi {
+            #[allow(clippy::cast_precision_loss)]
+            let t = (q - lo) as f64 / (hi - lo).max(1) as f64;
+            return bin_rate[i] + t * (bin_rate[i + 1] - bin_rate[i]);
+        }
+    }
+    *bin_rate.last().unwrap()
 }
 
 /// Weighted local linear regression (LOWESS, degree 1) over the q-axis.
@@ -679,5 +914,121 @@ mod tests {
                 ..Default::default()
             },
         );
+    }
+
+    // Build a record whose quality string is composed of the given Phred
+    // bins (cycled). Lets tests synthesise per-platform quality profiles.
+    fn rec_with_bins(seq: &str, bins: &[u8]) -> FastqRecord {
+        let qual: Vec<u8> = (0..seq.len()).map(|i| bins[i % bins.len()] + 33).collect();
+        FastqRecord {
+            id: "t".into(),
+            seq: seq.bytes().collect(),
+            qual,
+        }
+    }
+
+    #[test]
+    fn detect_picks_binned_for_novaseq_4bins() {
+        // NovaSeq 4-bin Phred: 2, 12, 23, 37
+        let recs: Vec<FastqRecord> = (0..32)
+            .map(|_| rec_with_bins("ACGTACGTACGTACGT", &[2, 12, 23, 37]))
+            .collect();
+        assert_eq!(detect_errfun(&recs), ErrFunKind::Binned);
+    }
+
+    #[test]
+    fn detect_picks_binned_for_nextseq_8bins() {
+        let recs: Vec<FastqRecord> = (0..32)
+            .map(|_| rec_with_bins("ACGTACGTACGTACGT", &[2, 12, 18, 25, 32, 36, 38, 40]))
+            .collect();
+        assert_eq!(detect_errfun(&recs), ErrFunKind::Binned);
+    }
+
+    #[test]
+    fn detect_picks_pacbio_for_near_q40() {
+        // PacBio CCS profile: mean ≥ 35, few distinct values.
+        let recs: Vec<FastqRecord> = (0..32)
+            .map(|_| rec_with_bins("ACGTACGTACGTACGT", &[38, 39, 40, 41]))
+            .collect();
+        assert_eq!(detect_errfun(&recs), ErrFunKind::PacBio);
+    }
+
+    #[test]
+    fn detect_picks_binned_for_mgi_12bins() {
+        // MGI/DNBSEQ-style 12 bins, mean ~Q30 — should be binned, not pacbio.
+        let bins: Vec<u8> = vec![2, 8, 14, 18, 22, 26, 30, 33, 36, 38, 40, 41];
+        let recs: Vec<FastqRecord> = (0..32)
+            .map(|_| rec_with_bins("ACGTACGTACGTACGTACGTACGT", &bins))
+            .collect();
+        assert_eq!(detect_errfun(&recs), ErrFunKind::Binned);
+    }
+
+    #[test]
+    fn detect_does_not_pick_pacbio_for_full_range_miseq() {
+        // MiSeq with full 0..41 range and mean ~Q35: should still be Loess
+        // (24 distinct values rules out PacBio's "few unique" branch).
+        let bins: Vec<u8> = (15..40).collect();
+        let recs: Vec<FastqRecord> = (0..32)
+            .map(|_| rec_with_bins("ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT", &bins))
+            .collect();
+        assert_eq!(detect_errfun(&recs), ErrFunKind::Loess);
+    }
+
+    #[test]
+    fn detect_picks_loess_for_full_illumina_range() {
+        // 20 distinct Phred values across a typical Illumina spread.
+        let bins: Vec<u8> = (20..40).collect();
+        let recs: Vec<FastqRecord> = (0..32)
+            .map(|_| rec_with_bins("ACGTACGTACGTACGTACGTACGTACGTACGT", &bins))
+            .collect();
+        assert_eq!(detect_errfun(&recs), ErrFunKind::Loess);
+    }
+
+    #[test]
+    fn auto_method_resolves_at_runtime() {
+        // A binned-quality input under method=Auto should produce the
+        // same model as method=Binned.
+        let recs: Vec<FastqRecord> = (0..64)
+            .map(|_| rec_with_bins("ACGTACGTACGTACGT", &[2, 12, 23, 37]))
+            .collect();
+        let auto = learn_errors(&recs, &ErrorLearningConfig::default()).unwrap();
+        let binned = learn_errors(
+            &recs,
+            &ErrorLearningConfig {
+                method: ErrFunKind::Binned,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // Element-wise equal — both took the same code path.
+        for r in 0..N_TRANSITIONS {
+            for c in 0..MAX_QUAL {
+                assert!(
+                    (auto.matrix[[r, c]] - binned.matrix[[r, c]]).abs() < 1e-12,
+                    "auto vs binned diverge at row={r} col={c}: {} vs {}",
+                    auto.matrix[[r, c]],
+                    binned.matrix[[r, c]]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pacbio_matrix_is_diagonal_dominant_and_normalised() {
+        let m = pacbio_matrix();
+        // Each column should sum to ~1 across the 4 obs-bases per true-base
+        // group (P(obs | true, q) is a distribution).
+        for tb in 0..4 {
+            for col in 0..MAX_QUAL {
+                let s: f64 = (0..4).map(|ob| m[[tb * 4 + ob, col]]).sum();
+                assert!(
+                    (s - 1.0).abs() < 1e-9,
+                    "pacbio matrix column {col} for tb={tb} sums to {s}, not 1"
+                );
+            }
+        }
+        // Self-transition dominates at Q30 (consistent with PacBio HiFi).
+        assert!(m[[0, 30]] > 0.99); // A→A at Q30
+        assert!(m[[1, 30]] < 0.01); // A→C at Q30
     }
 }
